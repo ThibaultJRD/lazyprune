@@ -1,0 +1,23 @@
+[package]
+name = "lazyprune"
+version = "0.1.0"
+edition = "2021"
+description = "A TUI tool to find and delete heavy cache/dependency directories"
+license = "MIT"
+repository = "https://github.com/ThibaultJRD/lazyprune"
+readme = "README.md"
+keywords = ["cli", "tui", "cleanup", "cache", "disk-space"]
+categories = ["command-line-utilities", "filesystem"]
+
+[dependencies]
+ratatui = "0.30"
+crossterm = "0.29"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "5"
+ignore = "0.4"
+rayon = "1.10"
+
+[dev-dependencies]
+tempfile = "3"

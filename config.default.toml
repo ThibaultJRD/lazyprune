@@ -1,0 +1,46 @@
+root = "~"
+skip = [".Trash", "Library", ".local/share/Steam", ".rustup", ".cargo"]
+
+[[targets]]
+name = "node_modules"
+dirs = ["node_modules"]
+indicator = "package.json"
+
+[[targets]]
+name = "Pods"
+dirs = ["Pods"]
+indicator = "Podfile"
+
+[[targets]]
+name = "Gradle cache"
+dirs = [".gradle", "build"]
+indicator = "build.gradle"
+
+[[targets]]
+name = "pnpm store"
+dirs = [".pnpm-store"]
+
+[[targets]]
+name = "Yarn cache"
+dirs = [".yarn/cache"]
+indicator = ".yarnrc.yml"
+
+[[targets]]
+name = "Next.js build"
+dirs = [".next"]
+indicator = "next.config.js"
+
+[[targets]]
+name = "Nuxt build"
+dirs = [".nuxt"]
+indicator = "nuxt.config.ts"
+
+[[targets]]
+name = "Rust target"
+dirs = ["target"]
+indicator = "Cargo.toml"
+
+[[targets]]
+name = "dist"
+dirs = ["dist"]
+indicator = "package.json"

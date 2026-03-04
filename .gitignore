@@ -1,0 +1,10 @@
+/target
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+.claude/
+CLAUDE.md
+docs/plans/
