@@ -1,5 +1,8 @@
 # lazyprune
 
+[![Crates.io](https://img.shields.io/crates/v/lazyprune)](https://crates.io/crates/lazyprune)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A TUI tool to find and delete heavy cache/dependency directories (`node_modules`, `Pods`, `.gradle`, `target/`, etc.) across your machine.
 
 Scans from `$HOME` by default, shows results in real-time, and lets you interactively select what to delete with vim-style keybindings.
