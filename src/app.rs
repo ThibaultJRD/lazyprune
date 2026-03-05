@@ -25,7 +25,6 @@ pub enum SortMode {
     Name,
     DateDesc,
     DateAsc,
-    Project,
 }
 
 impl SortMode {
@@ -35,8 +34,7 @@ impl SortMode {
             SortMode::SizeAsc => SortMode::Name,
             SortMode::Name => SortMode::DateDesc,
             SortMode::DateDesc => SortMode::DateAsc,
-            SortMode::DateAsc => SortMode::Project,
-            SortMode::Project => SortMode::SizeDesc,
+            SortMode::DateAsc => SortMode::SizeDesc,
         }
     }
 
@@ -47,7 +45,6 @@ impl SortMode {
             SortMode::Name => "Name",
             SortMode::DateDesc => "Date \u{2193}",
             SortMode::DateAsc => "Date \u{2191}",
-            SortMode::Project => "Project",
         }
     }
 }
@@ -108,6 +105,7 @@ pub struct App {
     pub delete_current_path: String,
     pub delete_errors: Vec<String>,
     pub group_separators: std::collections::HashSet<usize>,
+    pub project_grouping: bool,
     pub focus: FocusPanel,
     pub tree_cache: std::collections::HashMap<std::path::PathBuf, TreeData>,
     pub tree_rx: Option<mpsc::Receiver<(std::path::PathBuf, TreeData)>>,
@@ -147,6 +145,7 @@ impl App {
             delete_current_path: String::new(),
             delete_errors: Vec::new(),
             group_separators: std::collections::HashSet::new(),
+            project_grouping: false,
             focus: FocusPanel::List,
             tree_cache: std::collections::HashMap::new(),
             tree_rx: None,
@@ -320,6 +319,13 @@ impl App {
         self.apply_filter();
     }
 
+    /// Toggle project grouping on/off, re-sort and re-filter.
+    pub fn toggle_project_grouping(&mut self) {
+        self.project_grouping = !self.project_grouping;
+        self.apply_sort();
+        self.apply_filter();
+    }
+
     /// Return references to all selected items.
     pub fn selected_items(&self) -> Vec<&ScanResult> {
         self.items
@@ -464,32 +470,6 @@ impl App {
                     .last_modified
                     .cmp(&self.items[b].last_modified)
             }),
-            SortMode::Project => {
-                use std::collections::HashMap;
-                // Group indices by parent path
-                let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
-                for &i in &indices {
-                    let parent = self.items[i]
-                        .path
-                        .parent()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    groups.entry(parent).or_default().push(i);
-                }
-                // Sort items within each group by size descending
-                for group in groups.values_mut() {
-                    group.sort_by(|&a, &b| self.items[b].size.cmp(&self.items[a].size));
-                }
-                // Sort groups by total size descending
-                let mut group_list: Vec<(String, Vec<usize>)> = groups.into_iter().collect();
-                group_list.sort_by(|a, b| {
-                    let size_a: u64 = a.1.iter().map(|&i| self.items[i].size).sum();
-                    let size_b: u64 = b.1.iter().map(|&i| self.items[i].size).sum();
-                    size_b.cmp(&size_a).then_with(|| a.0.cmp(&b.0))
-                });
-                // Flatten
-                indices = group_list.into_iter().flat_map(|(_, idxs)| idxs).collect();
-            }
         }
 
         // Reorder items and selected by the permutation
@@ -503,7 +483,7 @@ impl App {
     }
 
     /// Rebuild filtered_indices based on filter_text and type_filter.
-    /// Clamps cursor to valid range. Inserts group separators in Project sort mode.
+    /// Clamps cursor to valid range.
     pub fn apply_filter(&mut self) {
         let filter_lower = self.filter_text.to_lowercase();
         let base_indices: Vec<usize> = self
@@ -527,28 +507,8 @@ impl App {
             .map(|(i, _)| i)
             .collect();
 
-        // Insert group separators for Project sort mode
         self.group_separators.clear();
-        if self.sort_mode == SortMode::Project && !base_indices.is_empty() {
-            self.filtered_indices = Vec::new();
-            let mut last_parent: Option<String> = None;
-            for &idx in &base_indices {
-                let parent = self.items[idx]
-                    .path
-                    .parent()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                if last_parent.as_ref() != Some(&parent) {
-                    // Insert separator
-                    self.group_separators.insert(self.filtered_indices.len());
-                    self.filtered_indices.push(usize::MAX); // sentinel
-                    last_parent = Some(parent);
-                }
-                self.filtered_indices.push(idx);
-            }
-        } else {
-            self.filtered_indices = base_indices;
-        }
+        self.filtered_indices = base_indices;
 
         // Clamp cursor (skip separators)
         if self.filtered_indices.is_empty() {
@@ -946,33 +906,6 @@ mod tests {
     }
 
     #[test]
-    fn test_sort_by_project_groups_by_parent() {
-        let mut app = make_test_app(vec![
-            make_result("node_modules", "/projects/app-a/node_modules", 100),
-            make_result("node_modules", "/projects/app-b/node_modules", 500),
-            make_result(".next", "/projects/app-a/.next", 200),
-        ]);
-
-        app.sort_mode = SortMode::Project;
-        app.apply_sort();
-        app.apply_filter();
-
-        // app-b group (500) comes first, then app-a group (300)
-        // Separators at positions 0 and 2
-        assert!(app.group_separators.contains(&0));
-        assert!(app.group_separators.contains(&2));
-
-        // Non-separator entries: app-b/node_modules, app-a/.next (200), app-a/node_modules (100)
-        let real_indices: Vec<usize> = (0..app.filtered_indices.len())
-            .filter(|i| !app.group_separators.contains(i))
-            .map(|i| app.filtered_indices[i])
-            .collect();
-        assert_eq!(app.items[real_indices[0]].size, 500); // app-b
-        assert_eq!(app.items[real_indices[1]].size, 200); // app-a/.next
-        assert_eq!(app.items[real_indices[2]].size, 100); // app-a/node_modules
-    }
-
-    #[test]
     fn test_tree_data_from_dir() {
         use tempfile::TempDir;
         let dir = TempDir::new().unwrap();
@@ -985,24 +918,6 @@ mod tests {
         assert!(!data.entries.is_empty());
         assert!(!data.top_dirs.is_empty());
         assert_eq!(data.top_dirs[0].0, "alpha");
-    }
-
-    #[test]
-    fn test_sort_non_project_clears_separators() {
-        let mut app = make_test_app(vec![
-            make_result("node_modules", "/projects/app-a/node_modules", 100),
-            make_result("node_modules", "/projects/app-b/node_modules", 500),
-        ]);
-
-        app.sort_mode = SortMode::Project;
-        app.apply_sort();
-        app.apply_filter();
-        assert!(!app.group_separators.is_empty());
-
-        app.sort_mode = SortMode::SizeDesc;
-        app.apply_sort();
-        app.apply_filter();
-        assert!(app.group_separators.is_empty());
     }
 
     #[test]

@@ -204,7 +204,7 @@ pub fn render_help(frame: &mut Frame) {
         help_line("Ctrl+a", "Select all"),
         help_line("d", "Delete selected"),
         help_line("/", "Filter by path"),
-        help_line("s", "Cycle sort (size/name/date/project)"),
+        help_line("s", "Cycle sort (size/name/date)"),
         help_line("t", "Filter by type"),
         help_line("l/\u{2192}/Enter", "Open details panel"),
         help_line("h/\u{2190}/Esc", "Back to list"),
