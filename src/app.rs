@@ -508,7 +508,44 @@ impl App {
             .collect();
 
         self.group_separators.clear();
-        self.filtered_indices = base_indices;
+        if self.project_grouping && !base_indices.is_empty() {
+            use std::collections::HashMap;
+
+            // Group indices by project key (git_root or parent)
+            let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
+            for &idx in &base_indices {
+                let item = &self.items[idx];
+                let key = item
+                    .git_root
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| {
+                        item.path
+                            .parent()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_default()
+                    });
+                groups.entry(key).or_default().push(idx);
+            }
+
+            // Sort groups by total size descending
+            let mut group_list: Vec<(String, Vec<usize>)> = groups.into_iter().collect();
+            group_list.sort_by(|a, b| {
+                let size_a: u64 = a.1.iter().map(|&i| self.items[i].size).sum();
+                let size_b: u64 = b.1.iter().map(|&i| self.items[i].size).sum();
+                size_b.cmp(&size_a).then_with(|| a.0.cmp(&b.0))
+            });
+
+            // Build filtered_indices with separators
+            self.filtered_indices = Vec::new();
+            for (_, group_indices) in &group_list {
+                self.group_separators.insert(self.filtered_indices.len());
+                self.filtered_indices.push(usize::MAX); // sentinel
+                self.filtered_indices.extend(group_indices);
+            }
+        } else {
+            self.filtered_indices = base_indices;
+        }
 
         // Clamp cursor (skip separators)
         if self.filtered_indices.is_empty() {
@@ -967,5 +1004,64 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let result = detect_project_type(dir.path());
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_project_grouping_by_git_root() {
+        let mut items = vec![
+            make_result("node_modules", "/projects/my-app/node_modules", 100),
+            make_result("Pods", "/projects/my-app/ios/Pods", 500),
+            make_result("node_modules", "/projects/other/node_modules", 200),
+        ];
+        items[0].git_root = Some(PathBuf::from("/projects/my-app"));
+        items[1].git_root = Some(PathBuf::from("/projects/my-app"));
+        items[2].git_root = Some(PathBuf::from("/projects/other"));
+
+        let mut app = make_test_app(items);
+        app.project_grouping = true;
+        app.apply_filter();
+
+        // my-app group (600) first, then other (200)
+        assert_eq!(app.group_separators.len(), 2);
+
+        let real: Vec<usize> = (0..app.filtered_indices.len())
+            .filter(|i| !app.group_separators.contains(i))
+            .map(|i| app.filtered_indices[i])
+            .collect();
+        // my-app items first (sorted by size desc: 500, 100), then other (200)
+        assert_eq!(app.items[real[0]].size, 500);
+        assert_eq!(app.items[real[1]].size, 100);
+        assert_eq!(app.items[real[2]].size, 200);
+    }
+
+    #[test]
+    fn test_project_grouping_fallback_no_git() {
+        let items = vec![
+            make_result("node_modules", "/a/node_modules", 100),
+            make_result("node_modules", "/b/node_modules", 300),
+        ];
+
+        let mut app = make_test_app(items);
+        app.project_grouping = true;
+        app.apply_filter();
+
+        // Two separate groups (different parents)
+        assert_eq!(app.group_separators.len(), 2);
+    }
+
+    #[test]
+    fn test_project_grouping_off_no_separators() {
+        let mut items = vec![
+            make_result("node_modules", "/projects/my-app/node_modules", 100),
+            make_result("Pods", "/projects/my-app/ios/Pods", 500),
+        ];
+        items[0].git_root = Some(PathBuf::from("/projects/my-app"));
+        items[1].git_root = Some(PathBuf::from("/projects/my-app"));
+
+        let mut app = make_test_app(items);
+        app.project_grouping = false;
+        app.apply_filter();
+
+        assert!(app.group_separators.is_empty());
     }
 }
