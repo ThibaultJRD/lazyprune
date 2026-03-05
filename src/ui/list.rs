@@ -56,8 +56,15 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                     .find(|&&i| i != usize::MAX);
                 let (label, group_size) = match next_idx {
                     Some(&item_idx) => {
-                        let parent = app.items[item_idx].path.parent();
-                        let parent_short = shorten_path(parent);
+                        let item = &app.items[item_idx];
+                        let project_label = item
+                            .git_root
+                            .as_ref()
+                            .and_then(|p| p.file_name())
+                            .and_then(|n| n.to_str())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| shorten_path(item.path.parent()));
+
                         let mut size = 0u64;
                         let mut count = 0usize;
                         for i in (pos + 1)..app.filtered_indices.len() {
@@ -69,7 +76,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                             count += 1;
                         }
                         (
-                            parent_short,
+                            project_label,
                             format!("{} targets, {}", count, crate::format_size(size)),
                         )
                     }

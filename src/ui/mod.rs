@@ -46,6 +46,10 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         Span::styled("]  ", Style::default().fg(Color::DarkGray)),
     ];
 
+    if app.project_grouping {
+        spans.push(Span::styled("[Project \u{2713}] ", Style::default().fg(Color::Cyan)));
+    }
+
     if app.scan_complete {
         // Stats summary: count + size per type, then total
         let total_size: u64 = app.items.iter().map(|i| i.size).sum();
@@ -121,6 +125,8 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::styled(": filter  ", Style::default().fg(Color::DarkGray)),
             Span::styled("s", Style::default().fg(Color::Cyan)),
             Span::styled(": sort  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("p", Style::default().fg(Color::Cyan)),
+            Span::styled(": group  ", Style::default().fg(Color::DarkGray)),
             Span::styled("?", Style::default().fg(Color::Cyan)),
             Span::styled(": help  ", Style::default().fg(Color::DarkGray)),
             Span::styled("l", Style::default().fg(Color::Cyan)),

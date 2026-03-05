@@ -180,6 +180,7 @@ fn handle_normal_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('v') => app.invert_selection(),
         KeyCode::Char('a') if modifiers.contains(KeyModifiers::CONTROL) => app.select_all(),
         KeyCode::Char('s') => app.cycle_sort(),
+        KeyCode::Char('p') => app.toggle_project_grouping(),
         KeyCode::Char('/') => app.mode = AppMode::Filter,
         KeyCode::Char('t') => {
             if !app.available_types.is_empty() {
