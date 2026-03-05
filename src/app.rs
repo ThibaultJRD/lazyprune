@@ -842,6 +842,7 @@ mod tests {
             size,
             last_modified: None,
             file_count: 0,
+            git_root: None,
         }
     }
 

@@ -14,6 +14,7 @@ pub struct ScanResult {
     pub size: u64,
     pub last_modified: Option<SystemTime>,
     pub file_count: u64,
+    pub git_root: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -47,6 +48,17 @@ pub fn compute_dir_stats(path: &Path) -> (u64, u64) {
             }
         })
         .reduce(|| (0, 0), |(s1, c1), (s2, c2)| (s1 + s2, c1 + c2))
+}
+
+/// Walk up from `path` looking for a `.git` directory.
+fn find_git_root(path: &Path) -> Option<PathBuf> {
+    let mut current = path.parent()?;
+    loop {
+        if current.join(".git").exists() {
+            return Some(current.to_path_buf());
+        }
+        current = current.parent()?;
+    }
 }
 
 /// Run the scan synchronously. Sends results via channel as they're found.
@@ -133,6 +145,7 @@ pub fn scan(root: PathBuf, targets: Vec<Target>, skip: Vec<String>, tx: mpsc::Se
 
             let (size, file_count) = compute_dir_stats(path);
             let last_modified = fs::metadata(path).and_then(|m| m.modified()).ok();
+            let git_root = find_git_root(path);
 
             found_targets.insert(path.to_path_buf());
 
@@ -142,6 +155,7 @@ pub fn scan(root: PathBuf, targets: Vec<Target>, skip: Vec<String>, tx: mpsc::Se
                 size,
                 last_modified,
                 file_count,
+                git_root,
             }));
             break;
         }
@@ -346,5 +360,24 @@ mod tests {
         let (size, count) = compute_dir_stats(dir.path());
         assert_eq!(size, 3000);
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_find_git_root_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::create_dir_all(root.join("src/deep/path")).unwrap();
+        let result = find_git_root(&root.join("src/deep/path"));
+        assert_eq!(result, Some(root.to_path_buf()));
+    }
+
+    #[test]
+    fn test_find_git_root_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("src/deep")).unwrap();
+        let result = find_git_root(&root.join("src/deep"));
+        assert_ne!(result, Some(root.join("src/deep")));
     }
 }
