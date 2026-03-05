@@ -380,4 +380,64 @@ mod tests {
         let result = find_git_root(&root.join("src/deep"));
         assert_ne!(result, Some(root.join("src/deep")));
     }
+
+    #[test]
+    fn test_scan_populates_git_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // Create a project with .git
+        fs::create_dir_all(root.join("my-app/.git")).unwrap();
+        fs::create_dir_all(root.join("my-app/node_modules/pkg")).unwrap();
+        fs::write(root.join("my-app/package.json"), "{}").unwrap();
+        fs::write(
+            root.join("my-app/node_modules/pkg/index.js"),
+            "x".repeat(100),
+        )
+        .unwrap();
+
+        // Create a project without .git
+        fs::create_dir_all(root.join("no-git/node_modules/pkg")).unwrap();
+        fs::write(root.join("no-git/package.json"), "{}").unwrap();
+        fs::write(
+            root.join("no-git/node_modules/pkg/index.js"),
+            "y".repeat(50),
+        )
+        .unwrap();
+
+        let targets = vec![Target {
+            name: "node_modules".to_string(),
+            dirs: vec!["node_modules".to_string()],
+            indicator: Some("package.json".to_string()),
+        }];
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        scan(root.to_path_buf(), targets, vec![], tx);
+
+        let results: Vec<ScanResult> = rx
+            .into_iter()
+            .filter_map(|m| {
+                if let ScanMessage::Found(r) = m {
+                    Some(r)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert_eq!(results.len(), 2);
+
+        let with_git = results
+            .iter()
+            .find(|r| r.path.to_string_lossy().contains("my-app"))
+            .unwrap();
+        assert_eq!(with_git.git_root, Some(root.join("my-app")));
+
+        let no_git = results
+            .iter()
+            .find(|r| r.path.to_string_lossy().contains("no-git"))
+            .unwrap();
+        // no-git dir has no .git, so git_root should NOT be the no-git dir itself
+        assert_ne!(no_git.git_root, Some(root.join("no-git")));
+    }
 }
