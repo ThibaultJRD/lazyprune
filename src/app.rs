@@ -520,13 +520,41 @@ impl App {
                 groups.entry(key).or_default().push(idx);
             }
 
-            // Sort groups by total size descending
+            // Sort groups by active sort mode
             let mut group_list: Vec<(String, Vec<usize>)> = groups.into_iter().collect();
-            group_list.sort_by(|a, b| {
-                let size_a: u64 = a.1.iter().map(|&i| self.items[i].size).sum();
-                let size_b: u64 = b.1.iter().map(|&i| self.items[i].size).sum();
-                size_b.cmp(&size_a).then_with(|| a.0.cmp(&b.0))
-            });
+            match self.sort_mode {
+                SortMode::SizeDesc => {
+                    group_list.sort_by(|a, b| {
+                        let size_a: u64 = a.1.iter().map(|&i| self.items[i].size).sum();
+                        let size_b: u64 = b.1.iter().map(|&i| self.items[i].size).sum();
+                        size_b.cmp(&size_a).then_with(|| a.0.cmp(&b.0))
+                    });
+                }
+                SortMode::SizeAsc => {
+                    group_list.sort_by(|a, b| {
+                        let size_a: u64 = a.1.iter().map(|&i| self.items[i].size).sum();
+                        let size_b: u64 = b.1.iter().map(|&i| self.items[i].size).sum();
+                        size_a.cmp(&size_b).then_with(|| a.0.cmp(&b.0))
+                    });
+                }
+                SortMode::Name => {
+                    group_list.sort_by(|a, b| a.0.cmp(&b.0));
+                }
+                SortMode::DateDesc => {
+                    group_list.sort_by(|a, b| {
+                        let date_a = a.1.iter().filter_map(|&i| self.items[i].last_modified).max();
+                        let date_b = b.1.iter().filter_map(|&i| self.items[i].last_modified).max();
+                        date_b.cmp(&date_a).then_with(|| a.0.cmp(&b.0))
+                    });
+                }
+                SortMode::DateAsc => {
+                    group_list.sort_by(|a, b| {
+                        let date_a = a.1.iter().filter_map(|&i| self.items[i].last_modified).min();
+                        let date_b = b.1.iter().filter_map(|&i| self.items[i].last_modified).min();
+                        date_a.cmp(&date_b).then_with(|| a.0.cmp(&b.0))
+                    });
+                }
+            }
 
             // Build filtered_indices with separators
             self.filtered_indices = Vec::new();
@@ -1037,6 +1065,30 @@ mod tests {
         app.apply_filter();
 
         assert!(app.group_separators.is_empty());
+    }
+
+    #[test]
+    fn test_project_grouping_sorted_by_name() {
+        let mut items = vec![
+            make_result("node_modules", "/projects/zebra/node_modules", 500),
+            make_result("node_modules", "/projects/alpha/node_modules", 100),
+        ];
+        items[0].git_root = Some(PathBuf::from("/projects/zebra"));
+        items[1].git_root = Some(PathBuf::from("/projects/alpha"));
+
+        let mut app = make_test_app(items);
+        app.sort_mode = SortMode::Name;
+        app.project_grouping = true;
+        app.apply_sort();
+        app.apply_filter();
+
+        // Groups should be sorted alphabetically: alpha first, then zebra
+        let real: Vec<usize> = (0..app.filtered_indices.len())
+            .filter(|i| !app.group_separators.contains(i))
+            .map(|i| app.filtered_indices[i])
+            .collect();
+        assert!(app.items[real[0]].path.to_string_lossy().contains("alpha"));
+        assert!(app.items[real[1]].path.to_string_lossy().contains("zebra"));
     }
 
     #[test]
