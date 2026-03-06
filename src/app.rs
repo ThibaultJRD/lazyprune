@@ -265,13 +265,24 @@ impl App {
 
     /// Toggle selection of the current item.
     pub fn toggle_selection(&mut self) {
-        if let Some(idx) = self.list_state.selected() {
-            if self.group_separators.contains(&idx) {
-                return;
+        let Some(idx) = self.list_state.selected() else {
+            return;
+        };
+        if self.group_separators.contains(&idx) {
+            // Find all items in this group (between this separator and the next)
+            let group_items: Vec<usize> = self.filtered_indices[idx + 1..]
+                .iter()
+                .take_while(|&&i| i != usize::MAX)
+                .copied()
+                .collect();
+            let all_selected = group_items.iter().all(|&i| self.selected[i]);
+            for &i in &group_items {
+                self.selected[i] = !all_selected;
             }
-            if let Some(&item_idx) = self.filtered_indices.get(idx) {
-                self.selected[item_idx] = !self.selected[item_idx];
-            }
+            return;
+        }
+        if let Some(&item_idx) = self.filtered_indices.get(idx) {
+            self.selected[item_idx] = !self.selected[item_idx];
         }
     }
 
@@ -1026,5 +1037,42 @@ mod tests {
         app.apply_filter();
 
         assert!(app.group_separators.is_empty());
+    }
+
+    #[test]
+    fn test_toggle_selection_on_separator_selects_group() {
+        let mut items = vec![
+            make_result("node_modules", "/projects/my-app/node_modules", 100),
+            make_result("Pods", "/projects/my-app/ios/Pods", 500),
+            make_result("node_modules", "/projects/other/node_modules", 200),
+        ];
+        items[0].git_root = Some(PathBuf::from("/projects/my-app"));
+        items[1].git_root = Some(PathBuf::from("/projects/my-app"));
+        items[2].git_root = Some(PathBuf::from("/projects/other"));
+
+        let mut app = make_test_app(items);
+        app.project_grouping = true;
+        app.apply_filter();
+
+        // Cursor on first separator (position 0)
+        app.list_state.select(Some(0));
+        assert!(app.group_separators.contains(&0));
+
+        // Toggle selects all items in the first group
+        app.toggle_selection();
+
+        let group_items: Vec<usize> = (1..app.filtered_indices.len())
+            .take_while(|i| !app.group_separators.contains(i))
+            .map(|i| app.filtered_indices[i])
+            .collect();
+        assert!(group_items.iter().all(|&i| app.selected[i]));
+
+        // Second group items should NOT be selected
+        let second_group_item = app.filtered_indices[app.filtered_indices.len() - 1];
+        assert!(!app.selected[second_group_item]);
+
+        // Toggle again deselects all items in the group
+        app.toggle_selection();
+        assert!(group_items.iter().all(|&i| !app.selected[i]));
     }
 }
