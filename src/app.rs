@@ -217,18 +217,12 @@ impl App {
             return;
         }
         let current = self.list_state.selected().unwrap_or(0);
-        let mut next = (current + 1).min(self.filtered_indices.len() - 1);
-        // Skip separators
-        while next < self.filtered_indices.len() - 1 && self.group_separators.contains(&next) {
-            next += 1;
-        }
-        // Don't land on a separator at the end
-        if self.group_separators.contains(&next) {
-            return;
-        }
+        let next = (current + 1).min(self.filtered_indices.len() - 1);
         self.list_state.select(Some(next));
         self.tree_scroll = 0;
-        self.request_tree_scan();
+        if !self.group_separators.contains(&next) {
+            self.request_tree_scan();
+        }
     }
 
     /// Move cursor up with bounds clamping.
@@ -237,30 +231,23 @@ impl App {
             return;
         }
         let current = self.list_state.selected().unwrap_or(0);
-        let mut prev = current.saturating_sub(1);
-        // Skip separators
-        while prev > 0 && self.group_separators.contains(&prev) {
-            prev -= 1;
-        }
-        // Don't land on a separator at position 0
-        if self.group_separators.contains(&prev) {
-            return;
-        }
+        let prev = current.saturating_sub(1);
         self.list_state.select(Some(prev));
         self.tree_scroll = 0;
-        self.request_tree_scan();
+        if !self.group_separators.contains(&prev) {
+            self.request_tree_scan();
+        }
     }
 
     /// Jump to top of list.
     pub fn go_top(&mut self) {
         if !self.filtered_indices.is_empty() {
             self.list_state.select(Some(0));
-            if self.group_separators.contains(&0) {
-                self.skip_separator_forward();
-            }
         }
         self.tree_scroll = 0;
-        self.request_tree_scan();
+        if !self.group_separators.contains(&0) {
+            self.request_tree_scan();
+        }
     }
 
     /// Jump to bottom of list.
@@ -268,18 +255,12 @@ impl App {
         if !self.filtered_indices.is_empty() {
             let last = self.filtered_indices.len() - 1;
             self.list_state.select(Some(last));
-            // Separators should not be at the end, but handle it defensively
-            if self.group_separators.contains(&last) {
-                // Walk backwards to find a non-separator
-                let mut pos = last;
-                while pos > 0 && self.group_separators.contains(&pos) {
-                    pos -= 1;
-                }
-                self.list_state.select(Some(pos));
-            }
         }
         self.tree_scroll = 0;
-        self.request_tree_scan();
+        let pos = self.list_state.selected().unwrap_or(0);
+        if !self.group_separators.contains(&pos) {
+            self.request_tree_scan();
+        }
     }
 
     /// Toggle selection of the current item.
@@ -547,7 +528,7 @@ impl App {
             self.filtered_indices = base_indices;
         }
 
-        // Clamp cursor (skip separators)
+        // Clamp cursor
         if self.filtered_indices.is_empty() {
             self.list_state.select(Some(0));
         } else {
@@ -556,25 +537,7 @@ impl App {
                 self.list_state
                     .select(Some(self.filtered_indices.len() - 1));
             }
-            // If cursor landed on a separator, move to next real item
-            if self
-                .group_separators
-                .contains(&self.list_state.selected().unwrap_or(0))
-            {
-                self.skip_separator_forward();
-            }
         }
-    }
-
-    fn skip_separator_forward(&mut self) {
-        let mut pos = self.list_state.selected().unwrap_or(0);
-        while pos < self.filtered_indices.len() && self.group_separators.contains(&pos) {
-            pos += 1;
-        }
-        if pos >= self.filtered_indices.len() {
-            pos = self.filtered_indices.len().saturating_sub(1);
-        }
-        self.list_state.select(Some(pos));
     }
 
     /// Build tree data for a directory: depth-2 tree entries, top 3 sub-dirs, project type.

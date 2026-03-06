@@ -126,7 +126,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::styled("s", Style::default().fg(Color::Cyan)),
             Span::styled(": sort  ", Style::default().fg(Color::DarkGray)),
             Span::styled("p", Style::default().fg(Color::Cyan)),
-            Span::styled(": group  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(": project  ", Style::default().fg(Color::DarkGray)),
             Span::styled("?", Style::default().fg(Color::Cyan)),
             Span::styled(": help  ", Style::default().fg(Color::DarkGray)),
             Span::styled("l", Style::default().fg(Color::Cyan)),
