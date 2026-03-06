@@ -283,7 +283,9 @@ impl App {
         let next = (current + 1).min(self.filtered_indices.len() - 1);
         self.list_state.select(Some(next));
         self.tree_scroll = 0;
-        if !self.group_separators.contains(&next) {
+        if self.group_separators.contains(&next) {
+            self.request_group_tree_scan();
+        } else {
             self.request_tree_scan();
         }
     }
@@ -297,7 +299,9 @@ impl App {
         let prev = current.saturating_sub(1);
         self.list_state.select(Some(prev));
         self.tree_scroll = 0;
-        if !self.group_separators.contains(&prev) {
+        if self.group_separators.contains(&prev) {
+            self.request_group_tree_scan();
+        } else {
             self.request_tree_scan();
         }
     }
@@ -308,7 +312,9 @@ impl App {
             self.list_state.select(Some(0));
         }
         self.tree_scroll = 0;
-        if !self.group_separators.contains(&0) {
+        if self.group_separators.contains(&0) {
+            self.request_group_tree_scan();
+        } else {
             self.request_tree_scan();
         }
     }
@@ -321,7 +327,9 @@ impl App {
         }
         self.tree_scroll = 0;
         let pos = self.list_state.selected().unwrap_or(0);
-        if !self.group_separators.contains(&pos) {
+        if self.group_separators.contains(&pos) {
+            self.request_group_tree_scan();
+        } else {
             self.request_tree_scan();
         }
     }
@@ -770,6 +778,22 @@ impl App {
         self.tree_debounce_at =
             Some(std::time::Instant::now() + std::time::Duration::from_millis(200));
         self.tree_requested_path = Some(path);
+    }
+
+    /// Request a tree scan for the current group's project root.
+    pub fn request_group_tree_scan(&mut self) {
+        let info = match self.current_group_info() {
+            Some(info) => info,
+            None => return,
+        };
+
+        if self.tree_cache.contains_key(&info.path) {
+            return;
+        }
+
+        self.tree_debounce_at =
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(200));
+        self.tree_requested_path = Some(info.path);
     }
 
     /// Check if debounce timer has elapsed and launch the tree scan thread.
