@@ -49,7 +49,10 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     ];
 
     if app.project_grouping {
-        spans.push(Span::styled("[Project \u{2713}] ", Style::default().fg(Color::Cyan)));
+        spans.push(Span::styled(
+            "[Project \u{2713}] ",
+            Style::default().fg(Color::Cyan),
+        ));
     }
 
     if app.scan_complete {
