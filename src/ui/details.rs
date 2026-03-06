@@ -24,6 +24,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // Check if we're on a group separator
+    if let Some(group_info) = app.current_group_info() {
+        render_group_details(frame, app, inner, &group_info);
+        return;
+    }
+
     let item = match app.current_item() {
         Some(item) => item,
         None => {
@@ -153,8 +159,22 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         }
     };
 
-    // Build tree lines with box-drawing characters
-    let tree_lines: Vec<Line> = tree_data
+    let tree_lines = render_tree_lines(tree_data);
+
+    // Apply scroll
+    let scroll = app.tree_scroll as usize;
+    let visible_height = tree_content_area.height as usize;
+    let visible_lines: Vec<Line> = tree_lines
+        .into_iter()
+        .skip(scroll)
+        .take(visible_height)
+        .collect();
+
+    frame.render_widget(Paragraph::new(visible_lines), tree_content_area);
+}
+
+fn render_tree_lines(tree_data: &crate::app::TreeData) -> Vec<Line<'static>> {
+    tree_data
         .entries
         .iter()
         .map(|entry| {
@@ -191,9 +211,115 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled(display_name, name_style),
             ])
         })
-        .collect();
+        .collect()
+}
 
-    // Apply scroll
+fn render_group_details(
+    frame: &mut Frame,
+    app: &App,
+    inner: Rect,
+    group_info: &crate::app::GroupInfo,
+) {
+    let home = dirs::home_dir().map(|h| h.to_string_lossy().to_string());
+    let path_display = group_info.path.to_string_lossy();
+    let path_short = match &home {
+        Some(h) if path_display.starts_with(h.as_str()) => {
+            format!("~{}", &path_display[h.len()..])
+        }
+        _ => path_display.to_string(),
+    };
+
+    let info_height = (7 + group_info.targets.len()) as u16;
+    let [info_area, tree_area] =
+        Layout::vertical([Constraint::Length(info_height), Constraint::Fill(1)]).areas(inner);
+
+    let mut info_lines = vec![
+        Line::from(vec![
+            Span::styled("  Project: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(&group_info.name, Style::default().fg(Color::Magenta)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Path: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(&path_short, Style::default().fg(Color::White)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Size: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format_size(group_info.total_size),
+                Style::default().fg(Color::Yellow),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Targets: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{}", group_info.targets.len()),
+                Style::default().fg(Color::White),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Contents:",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+
+    for (target_name, rel_path, size) in &group_info.targets {
+        info_lines.push(Line::from(vec![
+            Span::styled(
+                format!("   {:>8}  ", format_size(*size)),
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::styled(target_name, Style::default().fg(Color::Cyan)),
+            Span::styled(
+                format!("  {}", rel_path),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+    }
+
+    frame.render_widget(Paragraph::new(info_lines), info_area);
+
+    // Tree section
+    if tree_area.height < 2 {
+        return;
+    }
+
+    let sep_line = "─".repeat(tree_area.width as usize);
+    let [sep_area, tree_content_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(tree_area);
+    frame.render_widget(
+        Paragraph::new(Line::styled(sep_line, Style::default().fg(Color::DarkGray))),
+        sep_area,
+    );
+
+    if app.tree_loading {
+        let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        let spinner = spinner_frames[(app.scan_tick as usize) % spinner_frames.len()];
+        let loading = Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("  {} ", spinner),
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::styled("Loading...", Style::default().fg(Color::DarkGray)),
+        ]));
+        frame.render_widget(loading, tree_content_area);
+        return;
+    }
+
+    let tree_data = match app.tree_cache.get(&group_info.path) {
+        Some(d) => d,
+        None => {
+            let hint = Paragraph::new(Line::styled(
+                "  Loading tree...",
+                Style::default().fg(Color::DarkGray),
+            ));
+            frame.render_widget(hint, tree_content_area);
+            return;
+        }
+    };
+
+    let tree_lines = render_tree_lines(tree_data);
+
     let scroll = app.tree_scroll as usize;
     let visible_height = tree_content_area.height as usize;
     let visible_lines: Vec<Line> = tree_lines
