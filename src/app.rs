@@ -80,6 +80,13 @@ pub struct TreeData {
     pub project_type: Option<String>,
 }
 
+pub struct GroupInfo {
+    pub name: String,
+    pub path: std::path::PathBuf,
+    pub total_size: u64,
+    pub targets: Vec<(String, String, u64)>, // (target_name, relative_path, size)
+}
+
 pub struct App {
     pub items: Vec<ScanResult>,
     pub filtered_indices: Vec<usize>,
@@ -209,6 +216,62 @@ impl App {
         }
         let &item_idx = self.filtered_indices.get(idx)?;
         self.items.get(item_idx)
+    }
+
+    /// Get group info when cursor is on a separator.
+    pub fn current_group_info(&self) -> Option<GroupInfo> {
+        let idx = self.list_state.selected()?;
+        if !self.group_separators.contains(&idx) {
+            return None;
+        }
+
+        let group_item_indices: Vec<usize> = self.filtered_indices[idx + 1..]
+            .iter()
+            .take_while(|&&i| i != usize::MAX)
+            .copied()
+            .collect();
+
+        if group_item_indices.is_empty() {
+            return None;
+        }
+
+        let first_item = &self.items[group_item_indices[0]];
+
+        let project_path = first_item.git_root.clone().unwrap_or_else(|| {
+            first_item
+                .path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default()
+        });
+
+        let name = project_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?")
+            .to_string();
+
+        let total_size: u64 = group_item_indices.iter().map(|&i| self.items[i].size).sum();
+
+        let targets: Vec<(String, String, u64)> = group_item_indices
+            .iter()
+            .map(|&i| {
+                let item = &self.items[i];
+                let rel_path = item
+                    .path
+                    .strip_prefix(&project_path)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| item.path.to_string_lossy().to_string());
+                (item.target_name.clone(), rel_path, item.size)
+            })
+            .collect();
+
+        Some(GroupInfo {
+            name,
+            path: project_path,
+            total_size,
+            targets,
+        })
     }
 
     /// Move cursor down with bounds clamping.
