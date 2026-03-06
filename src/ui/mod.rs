@@ -32,6 +32,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let max_width = area.width as usize;
+
     let type_label = match &app.type_filter {
         Some(t) => t.as_str(),
         None => "All",
@@ -51,8 +53,20 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     }
 
     if app.scan_complete {
-        // Stats summary: count + size per type, then total
         let total_size: u64 = app.items.iter().map(|i| i.size).sum();
+        let total_span_text = format!("Total: {}", format_size(total_size));
+
+        // Calculate base width (prefix + total)
+        let prefix_width: usize = spans.iter().map(|s| s.content.len()).sum();
+        let total_section_width = 3 + total_span_text.len(); // " | " + total text
+
+        let available_for_types = max_width.saturating_sub(prefix_width + total_section_width);
+
+        // Try to fit type stats
+        let mut type_spans: Vec<Span> = Vec::new();
+        let mut types_shown = 0;
+        let mut current_type_width = 0;
+
         for (i, type_name) in app.available_types.iter().enumerate() {
             let count = app
                 .items
@@ -65,23 +79,44 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 .filter(|item| item.target_name == *type_name)
                 .map(|i| i.size)
                 .sum();
-            if i > 0 {
-                spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+            let text = format!("{}: {} \u{00b7} {}", type_name, count, format_size(size));
+            let separator_width = if i > 0 { 3 } else { 0 }; // " | "
+            let entry_width = separator_width + text.len();
+
+            // Reserve space for potential "... +N more"
+            let remaining_types = app.available_types.len() - i - 1;
+            let reserve = if remaining_types > 0 { 17 } else { 0 };
+
+            if current_type_width + entry_width + reserve > available_for_types && i > 0 {
+                let remaining = app.available_types.len() - i;
+                type_spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+                type_spans.push(Span::styled(
+                    format!("... +{} more", remaining),
+                    Style::default().fg(Color::DarkGray),
+                ));
+                break;
             }
-            spans.push(Span::styled(
-                format!("{}: {} \u{00b7} {}", type_name, count, format_size(size)),
-                Style::default().fg(Color::White),
-            ));
+
+            if i > 0 {
+                type_spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+            }
+            type_spans.push(Span::styled(text, Style::default().fg(Color::White)));
+            current_type_width += entry_width;
+            types_shown += 1;
         }
-        spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+
+        spans.extend(type_spans);
+
+        if types_shown > 0 || app.available_types.is_empty() {
+            spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+        }
         spans.push(Span::styled(
-            format!("Total: {}", format_size(total_size)),
+            total_span_text,
             Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD),
         ));
     } else {
-        // Animated spinner
         let frames = [
             "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}",
             "\u{2827}", "\u{2807}", "\u{280f}",
