@@ -44,7 +44,8 @@ lazyprune --init-config          # Generate config at ~/.config/lazyprune/config
 | `Ctrl+a` | Select all |
 | `d` | Delete selected |
 | `/` | Filter by path |
-| `s` | Cycle sort (size, name, date, project) |
+| `s` | Cycle sort (size, name, date) |
+| `p` | Toggle project grouping |
 | `t` | Filter by type |
 | `l/→/Enter` | Open details panel |
 | `h/←/Esc` | Back to list |
