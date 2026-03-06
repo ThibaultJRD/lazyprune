@@ -198,6 +198,9 @@ fn handle_normal_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             if app.current_item().is_some() {
                 app.focus = app::FocusPanel::Details;
                 app.request_tree_scan();
+            } else if app.current_group_info().is_some() {
+                app.focus = app::FocusPanel::Details;
+                app.request_group_tree_scan();
             }
         }
         _ => {}
