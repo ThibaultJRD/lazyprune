@@ -1,6 +1,6 @@
 [package]
 name = "lazyprune"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 description = "A TUI tool to find and delete heavy cache/dependency directories"
 license = "MIT"
