@@ -21,6 +21,7 @@ pub struct ScanResult {
 pub enum ScanMessage {
     Progress { dirs_scanned: u64, targets_found: u32 },
     Complete(Vec<ScanResult>),
+    #[allow(dead_code)]
     Error(String),
 }
 
@@ -100,6 +101,7 @@ pub fn scan(
     let _ = tx.send(ScanMessage::Complete(results));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn scan_dir<'scope>(
     path: PathBuf,
     targets: &'scope [Target],
@@ -181,7 +183,7 @@ fn scan_dir<'scope>(
         } else {
             // Not a target — spawn parallel exploration of this subtree
             let count = dirs_scanned.fetch_add(1, Ordering::Relaxed) + 1;
-            if count % 500 == 0 {
+            if count.is_multiple_of(500) {
                 let _ = progress_tx.send(ScanMessage::Progress {
                     dirs_scanned: count,
                     targets_found: targets_found.load(Ordering::Relaxed),

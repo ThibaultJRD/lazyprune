@@ -127,10 +127,9 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             format!("{} Scanning... {} dirs", spinner, app.dirs_scanned),
             Style::default().fg(Color::Yellow),
         ));
-        let found = app.items.len();
-        if found > 0 {
+        if app.targets_found > 0 {
             spans.push(Span::styled(
-                format!(" | {} found", found),
+                format!(" | {} found", app.targets_found),
                 Style::default().fg(Color::Green),
             ));
         }

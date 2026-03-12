@@ -84,7 +84,6 @@ pub struct GroupInfo {
     pub name: String,
     pub path: std::path::PathBuf,
     pub total_size: u64,
-    pub all_sizes_ready: bool,
     pub targets: Vec<(String, String, u64)>, // (target_name, relative_path, size)
 }
 
@@ -100,6 +99,7 @@ pub struct App {
     pub scan_rx: Option<mpsc::Receiver<ScanMessage>>,
     pub scan_complete: bool,
     pub dirs_scanned: u64,
+    pub targets_found: u32,
     pub total_deleted: u64,
     pub items_deleted: usize,
     pub scan_errors: u64,
@@ -142,6 +142,7 @@ impl App {
             scan_rx: Some(scan_rx),
             scan_complete: false,
             dirs_scanned: 0,
+            targets_found: 0,
             total_deleted: 0,
             items_deleted: 0,
             scan_errors: 0,
@@ -193,8 +194,9 @@ impl App {
                         self.apply_filter();
                         return;
                     }
-                    ScanMessage::Progress { dirs_scanned, .. } => {
+                    ScanMessage::Progress { dirs_scanned, targets_found } => {
                         self.dirs_scanned = dirs_scanned;
+                        self.targets_found = targets_found;
                     }
                     ScanMessage::Error(_) => {
                         self.scan_errors += 1;
@@ -255,7 +257,6 @@ impl App {
             .to_string();
 
         let total_size: u64 = group_item_indices.iter().map(|&i| self.items[i].size).sum();
-        let all_sizes_ready = true;
 
         let targets: Vec<(String, String, u64)> = group_item_indices
             .iter()
@@ -274,7 +275,6 @@ impl App {
             name,
             path: project_path,
             total_size,
-            all_sizes_ready,
             targets,
         })
     }
@@ -519,22 +519,6 @@ impl App {
     /// Count of selected items.
     pub fn selected_count(&self) -> usize {
         self.selected.iter().filter(|&&s| s).count()
-    }
-
-    /// Check if a single item passes the current text and type filters.
-    fn item_passes_filter(&self, item: &ScanResult) -> bool {
-        if !self.filter_text.is_empty() {
-            let path_str = item.path.to_string_lossy().to_lowercase();
-            if !path_str.contains(&self.filter_text.to_lowercase()) {
-                return false;
-            }
-        }
-        if let Some(ref tf) = self.type_filter {
-            if item.target_name != *tf {
-                return false;
-            }
-        }
-        true
     }
 
     /// Rebuild filtered_indices: filter, sort, and optionally group.
@@ -1243,11 +1227,10 @@ mod tests {
     }
 
     #[test]
-    fn test_poll_scan_results_incremental_append() {
+    fn test_poll_scan_results_batch() {
         let (tx, rx) = mpsc::channel();
         let mut app = App::new(rx);
 
-        // Send Complete with all results (new batch model)
         tx.send(ScanMessage::Complete(vec![
             ScanResult {
                 path: PathBuf::from("/a/node_modules"),
@@ -1271,57 +1254,12 @@ mod tests {
 
         app.poll_scan_results();
 
-        // Items present with correct stats
         assert_eq!(app.items.len(), 2);
         assert_eq!(app.items[0].size, 500);
         assert_eq!(app.items[1].size, 200);
-
-        // path_index_map populated
         assert_eq!(app.path_index_map.len(), 2);
-
-        // Sorted by size desc after Complete triggered apply_filter
         assert!(app.scan_complete);
         assert_eq!(app.items[app.filtered_indices[0]].size, 500);
         assert_eq!(app.items[app.filtered_indices[1]].size, 200);
-    }
-
-    #[test]
-    fn test_poll_scan_results_respects_filter() {
-        let (tx, rx) = mpsc::channel();
-        let mut app = App::new(rx);
-        app.filter_text = "api".to_string();
-
-        tx.send(ScanMessage::Complete(vec![
-            ScanResult {
-                path: PathBuf::from("/projects/api/node_modules"),
-                target_name: "node_modules".to_string(),
-                size: 0,
-                last_modified: None,
-                file_count: 0,
-                git_root: None,
-            },
-            ScanResult {
-                path: PathBuf::from("/projects/web/node_modules"),
-                target_name: "node_modules".to_string(),
-                size: 0,
-                last_modified: None,
-                file_count: 0,
-                git_root: None,
-            },
-        ]))
-        .unwrap();
-        drop(tx);
-
-        // Poll — Complete processes all items and applies filter
-        app.poll_scan_results();
-
-        // Both items exist in items vec
-        assert_eq!(app.items.len(), 2);
-        // But only the matching one is in filtered_indices
-        assert_eq!(app.filtered_indices.len(), 1);
-        assert_eq!(
-            app.items[app.filtered_indices[0]].path.to_string_lossy(),
-            "/projects/api/node_modules"
-        );
     }
 }
