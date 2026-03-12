@@ -84,8 +84,7 @@ pub struct GroupInfo {
     pub name: String,
     pub path: std::path::PathBuf,
     pub total_size: u64,
-    pub all_sizes_ready: bool,
-    pub targets: Vec<(String, String, u64, bool)>, // (target_name, relative_path, size, size_ready)
+    pub targets: Vec<(String, String, u64)>, // (target_name, relative_path, size)
 }
 
 pub struct App {
@@ -179,7 +178,6 @@ impl App {
             match rx.try_recv() {
                 Ok(msg) => match msg {
                     ScanMessage::Found(result) => {
-                        // Track available types
                         if !self.available_types.contains(&result.target_name) {
                             self.available_types.push(result.target_name.clone());
                         }
@@ -187,30 +185,20 @@ impl App {
                         self.path_index_map.insert(result.path.clone(), idx);
                         self.items.push(result);
                         self.selected.push(false);
-
-                        // Incremental filter: append to filtered_indices if item passes
-                        // current filter. No sort, no grouping — that happens on Complete.
+                        // Append to filtered_indices if passes filter (no sort yet)
                         let item = &self.items[idx];
-                        let passes = self.item_passes_filter(item);
-                        if passes {
+                        if self.item_passes_filter(item) {
                             self.filtered_indices.push(idx);
                         }
-                    }
-                    ScanMessage::StatsReady { path, size, file_count } => {
-                        if let Some(&idx) = self.path_index_map.get(&path) {
-                            self.items[idx].size = size;
-                            self.items[idx].file_count = file_count;
-                            self.items[idx].size_ready = true;
-                        }
-                    }
-                    ScanMessage::Progress { dirs_scanned } => {
-                        self.dirs_scanned = dirs_scanned;
                     }
                     ScanMessage::Complete => {
                         self.scan_complete = true;
                         self.scan_rx = None;
                         self.apply_filter();
                         return;
+                    }
+                    ScanMessage::Progress { dirs_scanned } => {
+                        self.dirs_scanned = dirs_scanned;
                     }
                     ScanMessage::Error(_) => {
                         self.scan_errors += 1;
@@ -271,9 +259,8 @@ impl App {
             .to_string();
 
         let total_size: u64 = group_item_indices.iter().map(|&i| self.items[i].size).sum();
-        let all_sizes_ready = group_item_indices.iter().all(|&i| self.items[i].size_ready);
 
-        let targets: Vec<(String, String, u64, bool)> = group_item_indices
+        let targets: Vec<(String, String, u64)> = group_item_indices
             .iter()
             .map(|&i| {
                 let item = &self.items[i];
@@ -282,7 +269,7 @@ impl App {
                     .strip_prefix(&project_path)
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|_| item.path.to_string_lossy().to_string());
-                (item.target_name.clone(), rel_path, item.size, item.size_ready)
+                (item.target_name.clone(), rel_path, item.size)
             })
             .collect();
 
@@ -290,7 +277,6 @@ impl App {
             name,
             path: project_path,
             total_size,
-            all_sizes_ready,
             targets,
         })
     }
@@ -453,23 +439,24 @@ impl App {
 
         std::thread::spawn(move || {
             use rayon::prelude::*;
-            items_to_delete
-                .par_iter()
-                .for_each(|(idx, path, size)| {
-                    let path_str = path.to_string_lossy().to_string();
-                    let _ = tx.send(DeleteMessage::Deleting { path: path_str });
-                    match std::fs::remove_dir_all(path) {
-                        Ok(()) => {
-                            let _ = tx.send(DeleteMessage::Deleted { idx: *idx, size: *size });
-                        }
-                        Err(e) => {
-                            let _ = tx.send(DeleteMessage::Error {
-                                idx: *idx,
-                                err: e.to_string(),
-                            });
-                        }
+            items_to_delete.par_iter().for_each(|(idx, path, size)| {
+                let path_str = path.to_string_lossy().to_string();
+                let _ = tx.send(DeleteMessage::Deleting { path: path_str });
+                match std::fs::remove_dir_all(path) {
+                    Ok(()) => {
+                        let _ = tx.send(DeleteMessage::Deleted {
+                            idx: *idx,
+                            size: *size,
+                        });
                     }
-                });
+                    Err(e) => {
+                        let _ = tx.send(DeleteMessage::Error {
+                            idx: *idx,
+                            err: e.to_string(),
+                        });
+                    }
+                }
+            });
             let _ = tx.send(DeleteMessage::Complete);
         });
     }
@@ -975,7 +962,6 @@ mod tests {
             last_modified: None,
             file_count: 0,
             git_root: None,
-            size_ready: true,
         }
     }
 
@@ -1260,101 +1246,40 @@ mod tests {
     }
 
     #[test]
-    fn test_poll_scan_results_incremental_append() {
+    fn test_poll_scan_results_streaming() {
         let (tx, rx) = mpsc::channel();
         let mut app = App::new(rx);
 
-        // Send two Found messages + StatsReady + Complete
         tx.send(ScanMessage::Found(ScanResult {
             path: PathBuf::from("/a/node_modules"),
             target_name: "node_modules".to_string(),
-            size: 0,
-            last_modified: None,
-            file_count: 0,
-            git_root: None,
-            size_ready: false,
-        }))
-        .unwrap();
-        tx.send(ScanMessage::Found(ScanResult {
-            path: PathBuf::from("/b/node_modules"),
-            target_name: "node_modules".to_string(),
-            size: 0,
-            last_modified: None,
-            file_count: 0,
-            git_root: None,
-            size_ready: false,
-        }))
-        .unwrap();
-        tx.send(ScanMessage::StatsReady {
-            path: PathBuf::from("/a/node_modules"),
             size: 500,
+            last_modified: None,
             file_count: 10,
-        })
+            git_root: None,
+        }))
         .unwrap();
-        tx.send(ScanMessage::StatsReady {
+        tx.send(ScanMessage::Found(ScanResult {
             path: PathBuf::from("/b/node_modules"),
+            target_name: "node_modules".to_string(),
             size: 200,
+            last_modified: None,
             file_count: 5,
-        })
+            git_root: None,
+        }))
         .unwrap();
         tx.send(ScanMessage::Complete).unwrap();
         drop(tx);
 
         app.poll_scan_results();
 
-        // Items present with correct stats
         assert_eq!(app.items.len(), 2);
-        assert!(app.items.iter().all(|i| i.size_ready));
         assert_eq!(app.items[0].size, 500);
         assert_eq!(app.items[1].size, 200);
-
-        // path_index_map populated
         assert_eq!(app.path_index_map.len(), 2);
-
-        // Sorted by size desc after Complete triggered apply_filter
         assert!(app.scan_complete);
+        // Sorted by size desc after Complete triggered apply_filter
         assert_eq!(app.items[app.filtered_indices[0]].size, 500);
         assert_eq!(app.items[app.filtered_indices[1]].size, 200);
-    }
-
-    #[test]
-    fn test_poll_scan_results_respects_filter() {
-        let (tx, rx) = mpsc::channel();
-        let mut app = App::new(rx);
-        app.filter_text = "api".to_string();
-
-        tx.send(ScanMessage::Found(ScanResult {
-            path: PathBuf::from("/projects/api/node_modules"),
-            target_name: "node_modules".to_string(),
-            size: 0,
-            last_modified: None,
-            file_count: 0,
-            git_root: None,
-            size_ready: false,
-        }))
-        .unwrap();
-        tx.send(ScanMessage::Found(ScanResult {
-            path: PathBuf::from("/projects/web/node_modules"),
-            target_name: "node_modules".to_string(),
-            size: 0,
-            last_modified: None,
-            file_count: 0,
-            git_root: None,
-            size_ready: false,
-        }))
-        .unwrap();
-        drop(tx);
-
-        // Poll without Complete — incremental append mode
-        app.poll_scan_results();
-
-        // Both items exist in items vec
-        assert_eq!(app.items.len(), 2);
-        // But only the matching one is in filtered_indices
-        assert_eq!(app.filtered_indices.len(), 1);
-        assert_eq!(
-            app.items[app.filtered_indices[0]].path.to_string_lossy(),
-            "/projects/api/node_modules"
-        );
     }
 }

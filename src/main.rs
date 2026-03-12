@@ -7,7 +7,6 @@ mod ui;
 use app::{App, AppMode};
 use clap::Parser;
 use config::Config;
-use targets::Target;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{DefaultTerminal, Frame};
 use scanner::ScanMessage;
@@ -16,6 +15,7 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
+use targets::Target;
 
 #[derive(Parser)]
 #[command(
@@ -92,7 +92,9 @@ fn main() -> io::Result<()> {
         let filter_lower = target_filter.to_lowercase();
         targets.retain(|t| {
             t.name.to_lowercase().contains(&filter_lower)
-                || t.dirs.iter().any(|d| d.to_lowercase().contains(&filter_lower))
+                || t.dirs
+                    .iter()
+                    .any(|d| d.to_lowercase().contains(&filter_lower))
         });
         if targets.is_empty() {
             eprintln!("No targets matching '{}'", target_filter);
@@ -112,16 +114,7 @@ fn main() -> io::Result<()> {
         let mut results: Vec<scanner::ScanResult> = Vec::new();
         for msg in rx {
             match msg {
-                ScanMessage::Found(result) => {
-                    results.push(result);
-                }
-                ScanMessage::StatsReady { path, size, file_count } => {
-                    if let Some(r) = results.iter_mut().find(|r| r.path == path) {
-                        r.size = size;
-                        r.file_count = file_count;
-                        r.size_ready = true;
-                    }
-                }
+                ScanMessage::Found(r) => results.push(r),
                 ScanMessage::Complete => break,
                 _ => {}
             }
