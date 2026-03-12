@@ -1,11 +1,10 @@
 use crate::targets::Target;
-use ignore::WalkBuilder;
 use rayon::prelude::*;
-use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 #[derive(Debug, Clone)]
@@ -16,20 +15,13 @@ pub struct ScanResult {
     pub last_modified: Option<SystemTime>,
     pub file_count: u64,
     pub git_root: Option<PathBuf>,
-    pub size_ready: bool,
 }
 
 #[derive(Debug)]
 pub enum ScanMessage {
-    Found(ScanResult),
-    StatsReady {
-        path: PathBuf,
-        size: u64,
-        file_count: u64,
-    },
-    Progress { dirs_scanned: u64 },
-    Complete,
-    Error(#[allow(dead_code)] String),
+    Progress { dirs_scanned: u64, targets_found: u32 },
+    Complete(Vec<ScanResult>),
+    Error(String),
 }
 
 /// Compute total size and file count of a directory recursively.
@@ -68,18 +60,6 @@ fn find_git_root(path: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Check if `path` is inside any directory in `found` by walking ancestors.
-/// O(path_depth) with HashSet lookups instead of O(found.len()) with starts_with.
-fn is_under_found_target(path: &Path, found: &HashSet<PathBuf>) -> bool {
-    let mut ancestor = path.to_path_buf();
-    while ancestor.pop() {
-        if found.contains(&ancestor) {
-            return true;
-        }
-    }
-    false
-}
-
 /// Run the scan synchronously. Sends results via channel as they're found.
 /// Called from a spawned thread.
 pub fn scan(
@@ -89,142 +69,145 @@ pub fn scan(
     include_hidden: bool,
     tx: mpsc::Sender<ScanMessage>,
 ) {
-    let found_targets: Arc<Mutex<HashSet<PathBuf>>> = Arc::new(Mutex::new(HashSet::new()));
+    let dirs_scanned = Arc::new(AtomicU64::new(0));
+    let targets_found = Arc::new(AtomicU32::new(0));
 
-    // Use filter_entry to prevent descending into:
-    // - directories in the skip list
-    // - hidden directories that don't match any target
-    // - directories inside already-found targets
-    let targets_for_filter = targets.clone();
-    let skip_for_filter = skip.clone();
-    let found_for_filter = Arc::clone(&found_targets);
-    let walker = WalkBuilder::new(&root)
-        .hidden(false) // don't skip hidden dirs — we need .pnpm-store, .gradle etc.
-        .git_ignore(false)
-        .follow_links(false)
-        .filter_entry(move |entry| {
-            let Some(name) = entry.file_name().to_str() else {
-                return true;
-            };
-            // Only filter directories
-            if !entry.file_type().is_some_and(|ft| ft.is_dir()) {
-                return true;
-            }
-            // Skip directories in the skip list
-            if skip_for_filter.iter().any(|s| s == name) {
+    // Internal channel to collect results from parallel workers
+    let (result_tx, result_rx) = mpsc::channel::<ScanResult>();
+
+    let tx_progress = tx.clone();
+    let dirs_ref = Arc::clone(&dirs_scanned);
+    let targets_ref = Arc::clone(&targets_found);
+
+    rayon::scope(|s| {
+        scan_dir(
+            root,
+            &targets,
+            &skip,
+            include_hidden,
+            &result_tx,
+            &tx_progress,
+            &dirs_ref,
+            &targets_ref,
+            s,
+        );
+    });
+
+    // All worker senders dropped when scope ended; drop the original to unblock drain
+    drop(result_tx);
+
+    let results: Vec<ScanResult> = result_rx.iter().collect();
+    let _ = tx.send(ScanMessage::Complete(results));
+}
+
+fn scan_dir<'scope>(
+    path: PathBuf,
+    targets: &'scope [Target],
+    skip: &'scope [String],
+    include_hidden: bool,
+    result_tx: &mpsc::Sender<ScanResult>,
+    progress_tx: &mpsc::Sender<ScanMessage>,
+    dirs_scanned: &Arc<AtomicU64>,
+    targets_found: &Arc<AtomicU32>,
+    scope: &rayon::Scope<'scope>,
+) {
+    let entries = match fs::read_dir(&path) {
+        Ok(rd) => rd,
+        Err(_) => return,
+    };
+
+    for entry in entries.filter_map(|e| e.ok()) {
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+
+        if !file_type.is_dir() || file_type.is_symlink() {
+            continue;
+        }
+
+        let name = entry.file_name();
+        let name_str = match name.to_str() {
+            Some(n) => n,
+            None => continue,
+        };
+
+        // Skip list check
+        if skip.iter().any(|s| s == name_str) {
+            continue;
+        }
+
+        // Skip hidden dirs that don't match any target (unless --hidden)
+        if !include_hidden
+            && name_str.starts_with('.')
+            && !targets.iter().any(|t| t.matches_dir_name(name_str))
+        {
+            continue;
+        }
+
+        let entry_path = entry.path();
+
+        // Check if this dir matches a target
+        // `path` is the parent directory — use it directly for indicator check
+        let matched_target = targets.iter().find(|t| {
+            if !t.matches_dir_name(name_str) {
                 return false;
             }
-            // Skip hidden dirs that don't match any target (unless --hidden)
-            if !include_hidden
-                && name.starts_with('.')
-                && !targets_for_filter.iter().any(|t| t.matches_dir_name(name))
-            {
-                return false;
-            }
-            // Skip subdirs of already-found targets (prevents descending into node_modules/...)
-            if let Ok(found) = found_for_filter.lock() {
-                if is_under_found_target(entry.path(), &found) {
+            if let Some(ref indicator) = t.indicator {
+                if !path.join(indicator).exists() {
                     return false;
                 }
             }
             true
-        })
-        .build();
+        });
 
-    let mut dirs_scanned: u64 = 0;
+        if let Some(target) = matched_target {
+            // Found a target — compute stats in this branch (single-pass)
+            // Nested targets are inherently excluded: we don't descend further
+            let (size, file_count) = compute_dir_stats(&entry_path);
+            let last_modified = fs::metadata(&entry_path).and_then(|m| m.modified()).ok();
+            let git_root = find_git_root(&entry_path);
 
-    // Dedicated thread pool for size computation so it doesn't saturate
-    // disk I/O and starve the walk which runs on the calling thread.
-    let stats_pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
-        .build()
-        .unwrap();
+            let _ = result_tx.send(ScanResult {
+                path: entry_path,
+                target_name: target.name.clone(),
+                size,
+                last_modified,
+                file_count,
+                git_root,
+            });
 
-    stats_pool.scope(|s| {
-        for entry in walker {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(e) => {
-                    let _ = tx.send(ScanMessage::Error(e.to_string()));
-                    continue;
-                }
-            };
-
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-
-            // Skip if this path is inside an already-found target directory.
-            if let Ok(found) = found_targets.lock() {
-                if is_under_found_target(path, &found) {
-                    continue;
-                }
-            }
-
-            let dir_name = match path.file_name().and_then(|n| n.to_str()) {
-                Some(n) => n.to_string(),
-                None => continue,
-            };
-
-            dirs_scanned += 1;
-            if dirs_scanned.is_multiple_of(500) {
-                let _ = tx.send(ScanMessage::Progress { dirs_scanned });
-            }
-
-            for target in &targets {
-                if !target.matches_dir_name(&dir_name) {
-                    continue;
-                }
-
-                if let Some(ref indicator) = target.indicator {
-                    let parent = match path.parent() {
-                        Some(p) => p,
-                        None => continue,
-                    };
-                    if !parent.join(indicator).exists() {
-                        continue;
-                    }
-                }
-
-                let last_modified = fs::metadata(path).and_then(|m| m.modified()).ok();
-                let git_root = find_git_root(path);
-                let path_buf = path.to_path_buf();
-
-                if let Ok(mut found) = found_targets.lock() {
-                    found.insert(path_buf.clone());
-                }
-
-                let _ = tx.send(ScanMessage::Found(ScanResult {
-                    path: path_buf.clone(),
-                    target_name: target.name.clone(),
-                    size: 0,
-                    last_modified,
-                    file_count: 0,
-                    git_root,
-                    size_ready: false,
-                }));
-
-                // Compute stats on the dedicated pool.
-                // par_iter inside compute_dir_stats also runs on this pool,
-                // keeping disk I/O pressure low for the walk.
-                let tx = tx.clone();
-                s.spawn(move |_| {
-                    let (size, file_count) = compute_dir_stats(&path_buf);
-                    let _ = tx.send(ScanMessage::StatsReady {
-                        path: path_buf,
-                        size,
-                        file_count,
-                    });
+            targets_found.fetch_add(1, Ordering::Relaxed);
+        } else {
+            // Not a target — spawn parallel exploration of this subtree
+            let count = dirs_scanned.fetch_add(1, Ordering::Relaxed) + 1;
+            if count % 500 == 0 {
+                let _ = progress_tx.send(ScanMessage::Progress {
+                    dirs_scanned: count,
+                    targets_found: targets_found.load(Ordering::Relaxed),
                 });
-
-                break;
             }
-        }
-        // stats_pool.scope waits for all spawned stats tasks here
-    });
 
-    let _ = tx.send(ScanMessage::Complete);
+            let result_tx = result_tx.clone();
+            let progress_tx = progress_tx.clone();
+            let dirs_scanned = Arc::clone(dirs_scanned);
+            let targets_found = Arc::clone(targets_found);
+
+            scope.spawn(move |s| {
+                scan_dir(
+                    entry_path,
+                    targets,
+                    skip,
+                    include_hidden,
+                    &result_tx,
+                    &progress_tx,
+                    &dirs_scanned,
+                    &targets_found,
+                    s,
+                );
+            });
+        }
+    }
 }
 
 #[cfg(test)]
@@ -234,28 +217,15 @@ mod tests {
     use std::sync::mpsc;
     use tempfile::TempDir;
 
-    /// Collect scan results, applying StatsReady updates, and return final results.
     fn collect_scan_results(rx: mpsc::Receiver<ScanMessage>) -> Vec<ScanResult> {
-        let mut results = Vec::new();
         for msg in rx {
             match msg {
-                ScanMessage::Found(r) => results.push(r),
-                ScanMessage::StatsReady {
-                    path,
-                    size,
-                    file_count,
-                } => {
-                    if let Some(r) = results.iter_mut().find(|r| r.path == path) {
-                        r.size = size;
-                        r.file_count = file_count;
-                        r.size_ready = true;
-                    }
-                }
-                ScanMessage::Complete => break,
+                ScanMessage::Complete(results) => return results,
+                ScanMessage::Error(e) => panic!("Scan error: {}", e),
                 _ => {}
             }
         }
-        results
+        Vec::new()
     }
 
     fn setup_test_tree() -> TempDir {
@@ -310,7 +280,6 @@ mod tests {
         let results = collect_scan_results(rx);
 
         assert_eq!(results.len(), 2);
-        assert!(results.iter().all(|r| r.size_ready));
         let names: Vec<&str> = results.iter().map(|r| r.target_name.as_str()).collect();
         assert!(names.contains(&"node_modules"));
         assert!(names.contains(&"Pods"));
