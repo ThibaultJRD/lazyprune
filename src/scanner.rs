@@ -133,7 +133,14 @@ pub fn scan(
 
     let mut dirs_scanned: u64 = 0;
 
-    rayon::scope(|s| {
+    // Dedicated thread pool for size computation so it doesn't saturate
+    // disk I/O and starve the walk which runs on the calling thread.
+    let stats_pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .unwrap();
+
+    stats_pool.scope(|s| {
         for entry in walker {
             let entry = match entry {
                 Ok(e) => e,
@@ -198,7 +205,9 @@ pub fn scan(
                     size_ready: false,
                 }));
 
-                // Compute stats in parallel on rayon threadpool
+                // Compute stats on the dedicated pool.
+                // par_iter inside compute_dir_stats also runs on this pool,
+                // keeping disk I/O pressure low for the walk.
                 let tx = tx.clone();
                 s.spawn(move |_| {
                     let (size, file_count) = compute_dir_stats(&path_buf);
@@ -212,7 +221,7 @@ pub fn scan(
                 break;
             }
         }
-        // rayon::scope waits for all spawned stats tasks here
+        // stats_pool.scope waits for all spawned stats tasks here
     });
 
     let _ = tx.send(ScanMessage::Complete);
