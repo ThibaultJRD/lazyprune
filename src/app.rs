@@ -111,6 +111,7 @@ pub struct App {
     pub delete_progress: usize,
     pub delete_current_path: String,
     pub delete_errors: Vec<String>,
+    pub delete_done_indices: Vec<usize>,
     pub group_separators: std::collections::HashSet<usize>,
     pub project_grouping: bool,
     pub focus: FocusPanel,
@@ -151,6 +152,7 @@ impl App {
             delete_progress: 0,
             delete_current_path: String::new(),
             delete_errors: Vec::new(),
+            delete_done_indices: Vec::new(),
             group_separators: std::collections::HashSet::new(),
             project_grouping: false,
             focus: FocusPanel::List,
@@ -421,6 +423,7 @@ impl App {
         self.delete_progress = 0;
         self.delete_current_path = String::new();
         self.delete_errors = Vec::new();
+        self.delete_done_indices = Vec::new();
 
         let items_to_delete: Vec<(usize, std::path::PathBuf, u64)> = indices
             .iter()
@@ -432,21 +435,24 @@ impl App {
         self.mode = AppMode::Deleting;
 
         std::thread::spawn(move || {
-            for (idx, path, size) in items_to_delete {
-                let path_str = path.to_string_lossy().to_string();
-                let _ = tx.send(DeleteMessage::Deleting { path: path_str });
-                match std::fs::remove_dir_all(&path) {
-                    Ok(()) => {
-                        let _ = tx.send(DeleteMessage::Deleted { idx, size });
+            use rayon::prelude::*;
+            items_to_delete
+                .par_iter()
+                .for_each(|(idx, path, size)| {
+                    let path_str = path.to_string_lossy().to_string();
+                    let _ = tx.send(DeleteMessage::Deleting { path: path_str });
+                    match std::fs::remove_dir_all(path) {
+                        Ok(()) => {
+                            let _ = tx.send(DeleteMessage::Deleted { idx: *idx, size: *size });
+                        }
+                        Err(e) => {
+                            let _ = tx.send(DeleteMessage::Error {
+                                idx: *idx,
+                                err: e.to_string(),
+                            });
+                        }
                     }
-                    Err(e) => {
-                        let _ = tx.send(DeleteMessage::Error {
-                            idx,
-                            err: e.to_string(),
-                        });
-                    }
-                }
-            }
+                });
             let _ = tx.send(DeleteMessage::Complete);
         });
     }
@@ -468,8 +474,7 @@ impl App {
                         self.total_deleted += size;
                         self.items_deleted += 1;
                         self.delete_progress += 1;
-                        self.items.remove(idx);
-                        self.selected.remove(idx);
+                        self.delete_done_indices.push(idx);
                     }
                     DeleteMessage::Error { idx: _, err } => {
                         self.delete_progress += 1;
@@ -477,6 +482,13 @@ impl App {
                     }
                     DeleteMessage::Complete => {
                         self.delete_rx = None;
+                        // Remove deleted items from highest index to lowest
+                        self.delete_done_indices.sort_unstable();
+                        self.delete_done_indices.dedup();
+                        for &idx in self.delete_done_indices.iter().rev() {
+                            self.items.remove(idx);
+                            self.selected.remove(idx);
+                        }
                         // Deselect all items (errored items stay in list but unselected)
                         for s in &mut self.selected {
                             *s = false;

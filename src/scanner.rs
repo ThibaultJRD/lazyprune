@@ -63,7 +63,13 @@ fn find_git_root(path: &Path) -> Option<PathBuf> {
 
 /// Run the scan synchronously. Sends results via channel as they're found.
 /// Called from a spawned thread.
-pub fn scan(root: PathBuf, targets: Vec<Target>, skip: Vec<String>, tx: mpsc::Sender<ScanMessage>) {
+pub fn scan(
+    root: PathBuf,
+    targets: Vec<Target>,
+    skip: Vec<String>,
+    include_hidden: bool,
+    tx: mpsc::Sender<ScanMessage>,
+) {
     let mut found_targets: HashSet<PathBuf> = HashSet::new();
 
     // Use filter_entry to prevent descending into:
@@ -87,8 +93,10 @@ pub fn scan(root: PathBuf, targets: Vec<Target>, skip: Vec<String>, tx: mpsc::Se
             if skip_for_filter.iter().any(|s| s == name) {
                 return false;
             }
-            // Skip hidden dirs that don't match any target
-            if name.starts_with('.') && !targets_for_filter.iter().any(|t| t.matches_dir_name(name))
+            // Skip hidden dirs that don't match any target (unless --hidden)
+            if !include_hidden
+                && name.starts_with('.')
+                && !targets_for_filter.iter().any(|t| t.matches_dir_name(name))
             {
                 return false;
             }
@@ -217,7 +225,7 @@ mod tests {
         ];
 
         let (tx, rx) = std::sync::mpsc::channel();
-        scan(dir.path().to_path_buf(), targets, vec![], tx);
+        scan(dir.path().to_path_buf(), targets, vec![], false, tx);
 
         let mut results = Vec::new();
         for msg in rx {
@@ -249,7 +257,7 @@ mod tests {
         }];
 
         let (tx, rx) = std::sync::mpsc::channel();
-        scan(dir.path().to_path_buf(), targets, vec![], tx);
+        scan(dir.path().to_path_buf(), targets, vec![], false, tx);
 
         let results: Vec<ScanResult> = rx
             .into_iter()
@@ -283,6 +291,7 @@ mod tests {
             dir.path().to_path_buf(),
             targets,
             vec!["skip-me".to_string()],
+            false,
             tx,
         );
 
@@ -332,7 +341,7 @@ mod tests {
         ];
 
         let (tx, rx) = std::sync::mpsc::channel();
-        scan(dir.path().to_path_buf(), targets, vec![], tx);
+        scan(dir.path().to_path_buf(), targets, vec![], false, tx);
 
         let results: Vec<ScanResult> = rx
             .into_iter()
@@ -412,7 +421,7 @@ mod tests {
         }];
 
         let (tx, rx) = std::sync::mpsc::channel();
-        scan(root.to_path_buf(), targets, vec![], tx);
+        scan(root.to_path_buf(), targets, vec![], false, tx);
 
         let results: Vec<ScanResult> = rx
             .into_iter()
@@ -439,5 +448,62 @@ mod tests {
             .unwrap();
         // no-git dir has no .git, so git_root should NOT be the no-git dir itself
         assert_ne!(no_git.git_root, Some(root.join("no-git")));
+    }
+
+    #[test]
+    fn test_scan_adhoc_dir_no_indicator() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("project-a/src/utils")).unwrap();
+        fs::write(root.join("project-a/src/utils/mod.rs"), "x".repeat(200)).unwrap();
+        fs::create_dir_all(root.join("project-b/src")).unwrap();
+        fs::write(root.join("project-b/src/main.rs"), "x".repeat(100)).unwrap();
+        // Non-matching dir
+        fs::create_dir_all(root.join("project-c/lib")).unwrap();
+        fs::write(root.join("project-c/lib/foo.rs"), "x".repeat(50)).unwrap();
+
+        let targets = vec![Target {
+            name: "src".to_string(),
+            dirs: vec!["src".to_string()],
+            indicator: None,
+        }];
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        scan(root.to_path_buf(), targets, vec![], false, tx);
+
+        let results: Vec<ScanResult> = rx
+            .into_iter()
+            .filter_map(|m| if let ScanMessage::Found(r) = m { Some(r) } else { None })
+            .collect();
+
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.target_name == "src"));
+    }
+
+    #[test]
+    fn test_scan_adhoc_hidden_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // .cache is hidden but IS our ad-hoc target
+        fs::create_dir_all(root.join("project/.cache/stuff")).unwrap();
+        fs::write(root.join("project/.cache/stuff/data"), "x".repeat(100)).unwrap();
+
+        let targets = vec![Target {
+            name: ".cache".to_string(),
+            dirs: vec![".cache".to_string()],
+            indicator: None,
+        }];
+
+        // Without --hidden: should still find .cache because it matches a target
+        let (tx, rx) = std::sync::mpsc::channel();
+        scan(root.to_path_buf(), targets.clone(), vec![], false, tx);
+
+        let results: Vec<ScanResult> = rx
+            .into_iter()
+            .filter_map(|m| if let ScanMessage::Found(r) = m { Some(r) } else { None })
+            .collect();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].target_name, ".cache");
     }
 }

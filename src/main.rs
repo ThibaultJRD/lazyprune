@@ -7,6 +7,7 @@ mod ui;
 use app::{App, AppMode};
 use clap::Parser;
 use config::Config;
+use targets::Target;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{DefaultTerminal, Frame};
 use scanner::ScanMessage;
@@ -31,12 +32,20 @@ struct Cli {
     init_config: bool,
 
     /// List findings without TUI (stdout)
-    #[arg(long)]
+    #[arg(short, long)]
     dry_run: bool,
 
     /// Filter to a specific target type
-    #[arg(long)]
+    #[arg(short, long)]
     target: Option<String>,
+
+    /// Also scan hidden directories (e.g. ~/.cache, ~/.local)
+    #[arg(short = 'H', long)]
+    hidden: bool,
+
+    /// Scan for any directory with this name (ad-hoc, no config needed)
+    #[arg(short = 'D', long, conflicts_with = "target")]
+    dir: Option<Vec<String>>,
 }
 
 fn main() -> io::Result<()> {
@@ -63,15 +72,27 @@ fn main() -> io::Result<()> {
     });
 
     let root = cli.path.unwrap_or_else(|| config.root_path());
-    let mut targets = config.targets.clone();
     let skip = config.skip.clone();
 
-    // Apply --target filter
+    let mut targets = if let Some(ref dir_names) = cli.dir {
+        dir_names
+            .iter()
+            .map(|d| Target {
+                name: d.clone(),
+                dirs: vec![d.clone()],
+                indicator: None,
+            })
+            .collect()
+    } else {
+        config.targets.clone()
+    };
+
+    // Apply --target filter (only when using config targets, not --dir)
     if let Some(ref target_filter) = cli.target {
+        let filter_lower = target_filter.to_lowercase();
         targets.retain(|t| {
-            t.name
-                .to_lowercase()
-                .contains(&target_filter.to_lowercase())
+            t.name.to_lowercase().contains(&filter_lower)
+                || t.dirs.iter().any(|d| d.to_lowercase().contains(&filter_lower))
         });
         if targets.is_empty() {
             eprintln!("No targets matching '{}'", target_filter);
@@ -81,8 +102,9 @@ fn main() -> io::Result<()> {
 
     let (tx, rx) = mpsc::channel();
 
+    let hidden = cli.hidden;
     thread::spawn(move || {
-        scanner::scan(root, targets, skip, tx);
+        scanner::scan(root, targets, skip, hidden, tx);
     });
 
     // Handle --dry-run
@@ -358,5 +380,26 @@ mod tests {
     fn test_format_size_gb() {
         assert_eq!(format_size(1_073_741_824), "1.0 GB");
         assert_eq!(format_size(2_684_354_560), "2.5 GB");
+    }
+
+    #[test]
+    fn test_cli_parses_dir_option() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["lazyprune", "-D", "src"]).unwrap();
+        assert_eq!(cli.dir, Some(vec!["src".to_string()]));
+    }
+
+    #[test]
+    fn test_cli_parses_multiple_dir_options() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["lazyprune", "-D", "src", "-D", "docs"]).unwrap();
+        assert_eq!(cli.dir, Some(vec!["src".to_string(), "docs".to_string()]));
+    }
+
+    #[test]
+    fn test_cli_dir_and_target_conflict() {
+        use clap::Parser;
+        let result = Cli::try_parse_from(["lazyprune", "-D", "src", "-t", "node"]);
+        assert!(result.is_err());
     }
 }
