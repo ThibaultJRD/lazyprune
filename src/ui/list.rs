@@ -67,7 +67,6 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 
                         let mut size = 0u64;
                         let mut count = 0usize;
-                        let mut all_ready = true;
                         for i in (pos + 1)..app.filtered_indices.len() {
                             if app.group_separators.contains(&i) {
                                 break;
@@ -75,15 +74,8 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                             let gi = app.filtered_indices[i];
                             size += app.items[gi].size;
                             count += 1;
-                            if !app.items[gi].size_ready {
-                                all_ready = false;
-                            }
                         }
-                        let size_label = if all_ready {
-                            crate::format_size(size)
-                        } else {
-                            super::SPINNER_FRAMES[(app.scan_tick as usize) % super::SPINNER_FRAMES.len()].to_string()
-                        };
+                        let size_label = crate::format_size(size);
                         (
                             project_label,
                             format!("{} targets, {}", count, size_label),
@@ -100,11 +92,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             let is_highlighted = selected_pos == Some(pos);
 
             let marker = if is_selected { "● " } else { "  " };
-            let size_str = if item.size_ready {
-                format_size(item.size)
-            } else {
-                super::SPINNER_FRAMES[(app.scan_tick as usize) % super::SPINNER_FRAMES.len()].to_string()
-            };
+            let size_str = format_size(item.size);
             let dir_name = item
                 .path
                 .file_name()
@@ -113,9 +101,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 
             let parent_path = shorten_path(item.path.parent());
 
-            let size_color = if !item.size_ready {
-                Color::DarkGray
-            } else if item.size >= 1_073_741_824 {
+            let size_color = if item.size >= 1_073_741_824 {
                 Color::Red
             } else if item.size >= 524_288_000 {
                 Color::Yellow

@@ -112,17 +112,10 @@ fn main() -> io::Result<()> {
         let mut results: Vec<scanner::ScanResult> = Vec::new();
         for msg in rx {
             match msg {
-                ScanMessage::Found(result) => {
-                    results.push(result);
+                ScanMessage::Complete(batch) => {
+                    results = batch;
+                    break;
                 }
-                ScanMessage::StatsReady { path, size, file_count } => {
-                    if let Some(r) = results.iter_mut().find(|r| r.path == path) {
-                        r.size = size;
-                        r.file_count = file_count;
-                        r.size_ready = true;
-                    }
-                }
-                ScanMessage::Complete => break,
                 _ => {}
             }
         }

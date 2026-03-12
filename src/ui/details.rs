@@ -85,16 +85,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled("  Size: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                if item.size_ready {
-                    format_size(item.size)
-                } else {
-                    format!("{} computing...", super::SPINNER_FRAMES[(app.scan_tick as usize) % super::SPINNER_FRAMES.len()])
-                },
+                format_size(item.size),
                 Style::default().fg(Color::Yellow),
             ),
             Span::styled("  ·  Files: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                if item.size_ready { format!("{}", item.file_count) } else { "...".to_string() },
+                format!("{}", item.file_count),
                 Style::default().fg(Color::White),
             ),
         ]),
@@ -251,11 +247,7 @@ fn render_group_details(
         Line::from(vec![
             Span::styled("  Size: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                if group_info.all_sizes_ready {
-                    format_size(group_info.total_size)
-                } else {
-                    format!("{} computing...", super::SPINNER_FRAMES[(app.scan_tick as usize) % super::SPINNER_FRAMES.len()])
-                },
+                format_size(group_info.total_size),
                 Style::default().fg(Color::Yellow),
             ),
         ]),
@@ -273,8 +265,8 @@ fn render_group_details(
         )),
     ];
 
-    for (target_name, rel_path, size, ready) in &group_info.targets {
-        let size_text = if *ready { format_size(*size) } else { "...".to_string() };
+    for (target_name, rel_path, size) in &group_info.targets {
+        let size_text = format_size(*size);
         info_lines.push(Line::from(vec![
             Span::styled(
                 format!("   {:>8}  ", size_text),
