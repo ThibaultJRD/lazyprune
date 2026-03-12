@@ -122,6 +122,7 @@ pub struct App {
     pub tree_scroll: u16,
     pub tree_debounce_at: Option<std::time::Instant>,
     pub tree_requested_path: Option<std::path::PathBuf>,
+    pub path_index_map: std::collections::HashMap<std::path::PathBuf, usize>,
 }
 
 impl App {
@@ -163,6 +164,7 @@ impl App {
             tree_scroll: 0,
             tree_debounce_at: None,
             tree_requested_path: None,
+            path_index_map: std::collections::HashMap::new(),
         }
     }
 
@@ -173,8 +175,6 @@ impl App {
             None => return,
         };
 
-        let mut new_items = false;
-
         loop {
             match rx.try_recv() {
                 Ok(msg) => match msg {
@@ -183,18 +183,25 @@ impl App {
                         if !self.available_types.contains(&result.target_name) {
                             self.available_types.push(result.target_name.clone());
                         }
+                        let idx = self.items.len();
+                        self.path_index_map.insert(result.path.clone(), idx);
                         self.items.push(result);
                         self.selected.push(false);
-                        new_items = true;
+
+                        // Incremental filter: append to filtered_indices if item passes
+                        // current filter. No sort, no grouping — that happens on Complete.
+                        let item = &self.items[idx];
+                        let passes = self.item_passes_filter(item);
+                        if passes {
+                            self.filtered_indices.push(idx);
+                        }
                     }
                     ScanMessage::StatsReady { path, size, file_count } => {
-                        if let Some(item) = self.items.iter_mut().find(|i| i.path == path) {
-                            item.size = size;
-                            item.file_count = file_count;
-                            item.size_ready = true;
+                        if let Some(&idx) = self.path_index_map.get(&path) {
+                            self.items[idx].size = size;
+                            self.items[idx].file_count = file_count;
+                            self.items[idx].size_ready = true;
                         }
-                        // Sizes update in-place (visible immediately in UI) but we
-                        // skip re-sort here — items stay stable until new Found or Complete.
                     }
                     ScanMessage::Progress { dirs_scanned } => {
                         self.dirs_scanned = dirs_scanned;
@@ -202,7 +209,6 @@ impl App {
                     ScanMessage::Complete => {
                         self.scan_complete = true;
                         self.scan_rx = None;
-                        self.apply_sort();
                         self.apply_filter();
                         return;
                     }
@@ -214,16 +220,10 @@ impl App {
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.scan_complete = true;
                     self.scan_rx = None;
-                    self.apply_sort();
                     self.apply_filter();
                     return;
                 }
             }
-        }
-
-        if new_items {
-            self.apply_sort();
-            self.apply_filter();
         }
     }
 
@@ -399,14 +399,12 @@ impl App {
     /// Cycle to the next sort mode, re-sort, and re-filter.
     pub fn cycle_sort(&mut self) {
         self.sort_mode = self.sort_mode.next();
-        self.apply_sort();
         self.apply_filter();
     }
 
     /// Toggle project grouping on/off, re-sort and re-filter.
     pub fn toggle_project_grouping(&mut self) {
         self.project_grouping = !self.project_grouping;
-        self.apply_sort();
         self.apply_filter();
     }
 
@@ -512,6 +510,9 @@ impl App {
                         for s in &mut self.selected {
                             *s = false;
                         }
+                        // path_index_map is stale after removal (indices shifted),
+                        // but it's only used during scan which is already complete.
+                        self.path_index_map.clear();
                         self.tree_cache.clear();
                         self.apply_filter();
                         self.mode = AppMode::Normal;
@@ -536,51 +537,26 @@ impl App {
         self.selected.iter().filter(|&&s| s).count()
     }
 
-    /// Sort items vec according to current sort_mode.
-    /// Remaps the selected array to stay in sync.
-    pub fn apply_sort(&mut self) {
-        // Build index permutation
-        let mut indices: Vec<usize> = (0..self.items.len()).collect();
-        match self.sort_mode {
-            SortMode::SizeDesc => {
-                indices.sort_by(|&a, &b| self.items[b].size.cmp(&self.items[a].size))
+    /// Check if a single item passes the current text and type filters.
+    fn item_passes_filter(&self, item: &ScanResult) -> bool {
+        if !self.filter_text.is_empty() {
+            let path_str = item.path.to_string_lossy().to_lowercase();
+            if !path_str.contains(&self.filter_text.to_lowercase()) {
+                return false;
             }
-            SortMode::SizeAsc => {
-                indices.sort_by(|&a, &b| self.items[a].size.cmp(&self.items[b].size))
-            }
-            SortMode::Name => indices.sort_by(|&a, &b| {
-                self.items[a]
-                    .path
-                    .to_string_lossy()
-                    .cmp(&self.items[b].path.to_string_lossy())
-            }),
-            SortMode::DateDesc => indices.sort_by(|&a, &b| {
-                self.items[b]
-                    .last_modified
-                    .cmp(&self.items[a].last_modified)
-            }),
-            SortMode::DateAsc => indices.sort_by(|&a, &b| {
-                self.items[a]
-                    .last_modified
-                    .cmp(&self.items[b].last_modified)
-            }),
         }
-
-        // Reorder items and selected by the permutation
-        let new_items: Vec<ScanResult> = indices.iter().map(|&i| self.items[i].clone()).collect();
-        let new_selected: Vec<bool> = indices
-            .iter()
-            .map(|&i| self.selected.get(i).copied().unwrap_or(false))
-            .collect();
-        self.items = new_items;
-        self.selected = new_selected;
+        if let Some(ref tf) = self.type_filter {
+            if item.target_name != *tf {
+                return false;
+            }
+        }
+        true
     }
 
-    /// Rebuild filtered_indices based on filter_text and type_filter.
-    /// Clamps cursor to valid range.
+    /// Rebuild filtered_indices: filter, sort, and optionally group.
     pub fn apply_filter(&mut self) {
         let filter_lower = self.filter_text.to_lowercase();
-        let base_indices: Vec<usize> = self
+        let mut base_indices: Vec<usize> = self
             .items
             .iter()
             .enumerate()
@@ -601,11 +577,38 @@ impl App {
             .map(|(i, _)| i)
             .collect();
 
+        // Sort filtered indices by current sort mode (no item cloning)
+        match self.sort_mode {
+            SortMode::SizeDesc => {
+                base_indices.sort_unstable_by(|&a, &b| self.items[b].size.cmp(&self.items[a].size))
+            }
+            SortMode::SizeAsc => {
+                base_indices.sort_unstable_by(|&a, &b| self.items[a].size.cmp(&self.items[b].size))
+            }
+            SortMode::Name => base_indices.sort_unstable_by(|&a, &b| {
+                self.items[a]
+                    .path
+                    .to_string_lossy()
+                    .cmp(&self.items[b].path.to_string_lossy())
+            }),
+            SortMode::DateDesc => base_indices.sort_unstable_by(|&a, &b| {
+                self.items[b]
+                    .last_modified
+                    .cmp(&self.items[a].last_modified)
+            }),
+            SortMode::DateAsc => base_indices.sort_unstable_by(|&a, &b| {
+                self.items[a]
+                    .last_modified
+                    .cmp(&self.items[b].last_modified)
+            }),
+        }
+
         self.group_separators.clear();
         if self.project_grouping && !base_indices.is_empty() {
             use std::collections::HashMap;
 
-            // Group indices by project key (git_root or parent)
+            // Group indices by project key (git_root or parent).
+            // Iterating sorted base_indices preserves sort order within each group.
             let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
             for &idx in &base_indices {
                 let item = &self.items[idx];
@@ -626,24 +629,24 @@ impl App {
             let mut group_list: Vec<(String, Vec<usize>)> = groups.into_iter().collect();
             match self.sort_mode {
                 SortMode::SizeDesc => {
-                    group_list.sort_by(|a, b| {
+                    group_list.sort_unstable_by(|a, b| {
                         let size_a: u64 = a.1.iter().map(|&i| self.items[i].size).sum();
                         let size_b: u64 = b.1.iter().map(|&i| self.items[i].size).sum();
                         size_b.cmp(&size_a).then_with(|| a.0.cmp(&b.0))
                     });
                 }
                 SortMode::SizeAsc => {
-                    group_list.sort_by(|a, b| {
+                    group_list.sort_unstable_by(|a, b| {
                         let size_a: u64 = a.1.iter().map(|&i| self.items[i].size).sum();
                         let size_b: u64 = b.1.iter().map(|&i| self.items[i].size).sum();
                         size_a.cmp(&size_b).then_with(|| a.0.cmp(&b.0))
                     });
                 }
                 SortMode::Name => {
-                    group_list.sort_by(|a, b| a.0.cmp(&b.0));
+                    group_list.sort_unstable_by(|a, b| a.0.cmp(&b.0));
                 }
                 SortMode::DateDesc => {
-                    group_list.sort_by(|a, b| {
+                    group_list.sort_unstable_by(|a, b| {
                         let date_a =
                             a.1.iter()
                                 .filter_map(|&i| self.items[i].last_modified)
@@ -656,7 +659,7 @@ impl App {
                     });
                 }
                 SortMode::DateAsc => {
-                    group_list.sort_by(|a, b| {
+                    group_list.sort_unstable_by(|a, b| {
                         let date_a =
                             a.1.iter()
                                 .filter_map(|&i| self.items[i].last_modified)
@@ -983,7 +986,6 @@ mod tests {
         let mut app = App::new(rx);
         app.items = items;
         app.selected = vec![false; n];
-        app.apply_sort();
         app.apply_filter();
         app
     }
@@ -997,12 +999,11 @@ mod tests {
         ]);
 
         app.sort_mode = SortMode::SizeDesc;
-        app.apply_sort();
         app.apply_filter();
 
-        assert_eq!(app.items[0].size, 500);
-        assert_eq!(app.items[1].size, 200);
-        assert_eq!(app.items[2].size, 100);
+        assert_eq!(app.items[app.filtered_indices[0]].size, 500);
+        assert_eq!(app.items[app.filtered_indices[1]].size, 200);
+        assert_eq!(app.items[app.filtered_indices[2]].size, 100);
     }
 
     #[test]
@@ -1210,7 +1211,6 @@ mod tests {
         let mut app = make_test_app(items);
         app.sort_mode = SortMode::Name;
         app.project_grouping = true;
-        app.apply_sort();
         app.apply_filter();
 
         // Groups should be sorted alphabetically: alpha first, then zebra
