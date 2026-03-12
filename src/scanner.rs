@@ -2,7 +2,7 @@ use crate::targets::Target;
 use rayon::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -19,8 +19,9 @@ pub struct ScanResult {
 
 #[derive(Debug)]
 pub enum ScanMessage {
-    Progress { dirs_scanned: u64, targets_found: u32 },
-    Complete(Vec<ScanResult>),
+    Found(ScanResult),
+    Progress { dirs_scanned: u64 },
+    Complete,
     #[allow(dead_code)]
     Error(String),
 }
@@ -71,14 +72,6 @@ pub fn scan(
     tx: mpsc::Sender<ScanMessage>,
 ) {
     let dirs_scanned = Arc::new(AtomicU64::new(0));
-    let targets_found = Arc::new(AtomicU32::new(0));
-
-    // Internal channel to collect results from parallel workers
-    let (result_tx, result_rx) = mpsc::channel::<ScanResult>();
-
-    let tx_progress = tx.clone();
-    let dirs_ref = Arc::clone(&dirs_scanned);
-    let targets_ref = Arc::clone(&targets_found);
 
     rayon::scope(|s| {
         scan_dir(
@@ -86,31 +79,22 @@ pub fn scan(
             &targets,
             &skip,
             include_hidden,
-            &result_tx,
-            &tx_progress,
-            &dirs_ref,
-            &targets_ref,
+            &tx,
+            &dirs_scanned,
             s,
         );
     });
 
-    // All worker senders dropped when scope ended; drop the original to unblock drain
-    drop(result_tx);
-
-    let results: Vec<ScanResult> = result_rx.iter().collect();
-    let _ = tx.send(ScanMessage::Complete(results));
+    let _ = tx.send(ScanMessage::Complete);
 }
 
-#[allow(clippy::too_many_arguments)]
 fn scan_dir<'scope>(
     path: PathBuf,
     targets: &'scope [Target],
     skip: &'scope [String],
     include_hidden: bool,
-    result_tx: &mpsc::Sender<ScanResult>,
-    progress_tx: &mpsc::Sender<ScanMessage>,
+    tx: &mpsc::Sender<ScanMessage>,
     dirs_scanned: &Arc<AtomicU64>,
-    targets_found: &Arc<AtomicU32>,
     scope: &rayon::Scope<'scope>,
 ) {
     let entries = match fs::read_dir(&path) {
@@ -170,30 +154,26 @@ fn scan_dir<'scope>(
             let last_modified = fs::metadata(&entry_path).and_then(|m| m.modified()).ok();
             let git_root = find_git_root(&entry_path);
 
-            let _ = result_tx.send(ScanResult {
+            let _ = tx.send(ScanMessage::Found(ScanResult {
                 path: entry_path,
                 target_name: target.name.clone(),
                 size,
                 last_modified,
                 file_count,
                 git_root,
-            });
+            }));
 
-            targets_found.fetch_add(1, Ordering::Relaxed);
         } else {
             // Not a target — spawn parallel exploration of this subtree
             let count = dirs_scanned.fetch_add(1, Ordering::Relaxed) + 1;
             if count.is_multiple_of(500) {
-                let _ = progress_tx.send(ScanMessage::Progress {
+                let _ = tx.send(ScanMessage::Progress {
                     dirs_scanned: count,
-                    targets_found: targets_found.load(Ordering::Relaxed),
                 });
             }
 
-            let result_tx = result_tx.clone();
-            let progress_tx = progress_tx.clone();
+            let tx = tx.clone();
             let dirs_scanned = Arc::clone(dirs_scanned);
-            let targets_found = Arc::clone(targets_found);
 
             scope.spawn(move |s| {
                 scan_dir(
@@ -201,10 +181,8 @@ fn scan_dir<'scope>(
                     targets,
                     skip,
                     include_hidden,
-                    &result_tx,
-                    &progress_tx,
+                    &tx,
                     &dirs_scanned,
-                    &targets_found,
                     s,
                 );
             });
@@ -220,14 +198,16 @@ mod tests {
     use tempfile::TempDir;
 
     fn collect_scan_results(rx: mpsc::Receiver<ScanMessage>) -> Vec<ScanResult> {
+        let mut results = Vec::new();
         for msg in rx {
             match msg {
-                ScanMessage::Complete(results) => return results,
+                ScanMessage::Found(r) => results.push(r),
+                ScanMessage::Complete => break,
                 ScanMessage::Error(e) => panic!("Scan error: {}", e),
                 _ => {}
             }
         }
-        Vec::new()
+        results
     }
 
     fn setup_test_tree() -> TempDir {

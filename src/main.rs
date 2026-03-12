@@ -111,9 +111,10 @@ fn main() -> io::Result<()> {
     if cli.dry_run {
         let mut results: Vec<scanner::ScanResult> = Vec::new();
         for msg in rx {
-            if let ScanMessage::Complete(batch) = msg {
-                results = batch;
-                break;
+            match msg {
+                ScanMessage::Found(r) => results.push(r),
+                ScanMessage::Complete => break,
+                _ => {}
             }
         }
         results.sort_by(|a, b| b.size.cmp(&a.size));
