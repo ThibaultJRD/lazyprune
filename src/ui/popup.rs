@@ -30,9 +30,14 @@ fn shorten_path(path: &std::path::Path) -> String {
 pub fn render_confirm(frame: &mut Frame, app: &App) {
     let selected = app.selected_items();
     let count = selected.len();
-    let total_size = format_size(app.selected_size());
+    let all_ready = selected.iter().all(|i| i.size_ready);
+    let size_label = if all_ready {
+        format_size(app.selected_size())
+    } else {
+        format!("~{}", format_size(app.selected_size()))
+    };
 
-    let title = format!("Delete {} items? ({})", count, total_size);
+    let title = format!("Delete {} items? ({})", count, size_label);
 
     let max_show = 15;
     let mut lines: Vec<Line> = Vec::new();

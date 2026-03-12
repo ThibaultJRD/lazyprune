@@ -84,10 +84,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  Size: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(format_size(item.size), Style::default().fg(Color::Yellow)),
+            Span::styled(
+                if item.size_ready {
+                    format_size(item.size)
+                } else {
+                    format!("{} computing...", super::SPINNER_FRAMES[(app.scan_tick as usize) % super::SPINNER_FRAMES.len()])
+                },
+                Style::default().fg(Color::Yellow),
+            ),
             Span::styled("  ·  Files: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                format!("{}", item.file_count),
+                if item.size_ready { format!("{}", item.file_count) } else { "...".to_string() },
                 Style::default().fg(Color::White),
             ),
         ]),
@@ -134,8 +141,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     if app.tree_loading {
-        let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-        let spinner = spinner_frames[(app.scan_tick as usize) % spinner_frames.len()];
+        let spinner = super::SPINNER_FRAMES[(app.scan_tick as usize) % super::SPINNER_FRAMES.len()];
         let loading = Paragraph::new(Line::from(vec![
             Span::styled(
                 format!("  {} ", spinner),
@@ -245,7 +251,11 @@ fn render_group_details(
         Line::from(vec![
             Span::styled("  Size: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                format_size(group_info.total_size),
+                if group_info.all_sizes_ready {
+                    format_size(group_info.total_size)
+                } else {
+                    format!("{} computing...", super::SPINNER_FRAMES[(app.scan_tick as usize) % super::SPINNER_FRAMES.len()])
+                },
                 Style::default().fg(Color::Yellow),
             ),
         ]),
@@ -263,10 +273,11 @@ fn render_group_details(
         )),
     ];
 
-    for (target_name, rel_path, size) in &group_info.targets {
+    for (target_name, rel_path, size, ready) in &group_info.targets {
+        let size_text = if *ready { format_size(*size) } else { "...".to_string() };
         info_lines.push(Line::from(vec![
             Span::styled(
-                format!("   {:>8}  ", format_size(*size)),
+                format!("   {:>8}  ", size_text),
                 Style::default().fg(Color::Yellow),
             ),
             Span::styled(target_name, Style::default().fg(Color::Cyan)),
@@ -293,8 +304,7 @@ fn render_group_details(
     );
 
     if app.tree_loading {
-        let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-        let spinner = spinner_frames[(app.scan_tick as usize) % spinner_frames.len()];
+        let spinner = super::SPINNER_FRAMES[(app.scan_tick as usize) % super::SPINNER_FRAMES.len()];
         let loading = Paragraph::new(Line::from(vec![
             Span::styled(
                 format!("  {} ", spinner),

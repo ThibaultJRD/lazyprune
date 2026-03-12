@@ -84,7 +84,8 @@ pub struct GroupInfo {
     pub name: String,
     pub path: std::path::PathBuf,
     pub total_size: u64,
-    pub targets: Vec<(String, String, u64)>, // (target_name, relative_path, size)
+    pub all_sizes_ready: bool,
+    pub targets: Vec<(String, String, u64, bool)>, // (target_name, relative_path, size, size_ready)
 }
 
 pub struct App {
@@ -172,6 +173,8 @@ impl App {
             None => return,
         };
 
+        let mut new_items = false;
+
         loop {
             match rx.try_recv() {
                 Ok(msg) => match msg {
@@ -182,6 +185,16 @@ impl App {
                         }
                         self.items.push(result);
                         self.selected.push(false);
+                        new_items = true;
+                    }
+                    ScanMessage::StatsReady { path, size, file_count } => {
+                        if let Some(item) = self.items.iter_mut().find(|i| i.path == path) {
+                            item.size = size;
+                            item.file_count = file_count;
+                            item.size_ready = true;
+                        }
+                        // Sizes update in-place (visible immediately in UI) but we
+                        // skip re-sort here — items stay stable until new Found or Complete.
                     }
                     ScanMessage::Progress { dirs_scanned } => {
                         self.dirs_scanned = dirs_scanned;
@@ -201,13 +214,17 @@ impl App {
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.scan_complete = true;
                     self.scan_rx = None;
-                    break;
+                    self.apply_sort();
+                    self.apply_filter();
+                    return;
                 }
             }
         }
 
-        self.apply_sort();
-        self.apply_filter();
+        if new_items {
+            self.apply_sort();
+            self.apply_filter();
+        }
     }
 
     /// Get the item currently under the cursor.
@@ -254,8 +271,9 @@ impl App {
             .to_string();
 
         let total_size: u64 = group_item_indices.iter().map(|&i| self.items[i].size).sum();
+        let all_sizes_ready = group_item_indices.iter().all(|&i| self.items[i].size_ready);
 
-        let targets: Vec<(String, String, u64)> = group_item_indices
+        let targets: Vec<(String, String, u64, bool)> = group_item_indices
             .iter()
             .map(|&i| {
                 let item = &self.items[i];
@@ -264,7 +282,7 @@ impl App {
                     .strip_prefix(&project_path)
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|_| item.path.to_string_lossy().to_string());
-                (item.target_name.clone(), rel_path, item.size)
+                (item.target_name.clone(), rel_path, item.size, item.size_ready)
             })
             .collect();
 
@@ -272,6 +290,7 @@ impl App {
             name,
             path: project_path,
             total_size,
+            all_sizes_ready,
             targets,
         })
     }
@@ -953,6 +972,7 @@ mod tests {
             last_modified: None,
             file_count: 0,
             git_root: None,
+            size_ready: true,
         }
     }
 

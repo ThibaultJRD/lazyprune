@@ -3,6 +3,8 @@ pub mod layout;
 pub mod list;
 pub mod popup;
 
+pub const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 use crate::app::{App, AppMode};
 use crate::format_size;
 use ratatui::{
@@ -120,11 +122,7 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 .add_modifier(Modifier::BOLD),
         ));
     } else {
-        let frames = [
-            "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}",
-            "\u{2827}", "\u{2807}", "\u{280f}",
-        ];
-        let spinner = frames[(app.scan_tick as usize) % frames.len()];
+        let spinner = SPINNER_FRAMES[(app.scan_tick as usize) % SPINNER_FRAMES.len()];
         spans.push(Span::styled(
             format!("{} Scanning... {} dirs", spinner, app.dirs_scanned),
             Style::default().fg(Color::Yellow),
