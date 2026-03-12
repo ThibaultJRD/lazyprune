@@ -84,10 +84,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  Size: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format_size(item.size),
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled(format_size(item.size), Style::default().fg(Color::Yellow)),
             Span::styled("  ·  Files: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 format!("{}", item.file_count),

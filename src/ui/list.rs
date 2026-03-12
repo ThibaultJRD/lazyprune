@@ -76,10 +76,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                             count += 1;
                         }
                         let size_label = crate::format_size(size);
-                        (
-                            project_label,
-                            format!("{} targets, {}", count, size_label),
-                        )
+                        (project_label, format!("{} targets, {}", count, size_label))
                     }
                     None => ("?".to_string(), String::new()),
                 };

@@ -439,23 +439,24 @@ impl App {
 
         std::thread::spawn(move || {
             use rayon::prelude::*;
-            items_to_delete
-                .par_iter()
-                .for_each(|(idx, path, size)| {
-                    let path_str = path.to_string_lossy().to_string();
-                    let _ = tx.send(DeleteMessage::Deleting { path: path_str });
-                    match std::fs::remove_dir_all(path) {
-                        Ok(()) => {
-                            let _ = tx.send(DeleteMessage::Deleted { idx: *idx, size: *size });
-                        }
-                        Err(e) => {
-                            let _ = tx.send(DeleteMessage::Error {
-                                idx: *idx,
-                                err: e.to_string(),
-                            });
-                        }
+            items_to_delete.par_iter().for_each(|(idx, path, size)| {
+                let path_str = path.to_string_lossy().to_string();
+                let _ = tx.send(DeleteMessage::Deleting { path: path_str });
+                match std::fs::remove_dir_all(path) {
+                    Ok(()) => {
+                        let _ = tx.send(DeleteMessage::Deleted {
+                            idx: *idx,
+                            size: *size,
+                        });
                     }
-                });
+                    Err(e) => {
+                        let _ = tx.send(DeleteMessage::Error {
+                            idx: *idx,
+                            err: e.to_string(),
+                        });
+                    }
+                }
+            });
             let _ = tx.send(DeleteMessage::Complete);
         });
     }

@@ -20,7 +20,9 @@ pub struct ScanResult {
 #[derive(Debug)]
 pub enum ScanMessage {
     Found(ScanResult),
-    Progress { dirs_scanned: u64 },
+    Progress {
+        dirs_scanned: u64,
+    },
     Complete,
     #[allow(dead_code)]
     Error(String),
@@ -74,15 +76,7 @@ pub fn scan(
     let dirs_scanned = Arc::new(AtomicU64::new(0));
 
     rayon::scope(|s| {
-        scan_dir(
-            root,
-            &targets,
-            &skip,
-            include_hidden,
-            &tx,
-            &dirs_scanned,
-            s,
-        );
+        scan_dir(root, &targets, &skip, include_hidden, &tx, &dirs_scanned, s);
     });
 
     let _ = tx.send(ScanMessage::Complete);
@@ -162,7 +156,6 @@ fn scan_dir<'scope>(
                 file_count,
                 git_root,
             }));
-
         } else {
             // Not a target — spawn parallel exploration of this subtree
             let count = dirs_scanned.fetch_add(1, Ordering::Relaxed) + 1;
