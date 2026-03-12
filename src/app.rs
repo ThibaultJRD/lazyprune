@@ -1258,4 +1258,103 @@ mod tests {
         app.toggle_selection();
         assert!(group_items.iter().all(|&i| !app.selected[i]));
     }
+
+    #[test]
+    fn test_poll_scan_results_incremental_append() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(rx);
+
+        // Send two Found messages + StatsReady + Complete
+        tx.send(ScanMessage::Found(ScanResult {
+            path: PathBuf::from("/a/node_modules"),
+            target_name: "node_modules".to_string(),
+            size: 0,
+            last_modified: None,
+            file_count: 0,
+            git_root: None,
+            size_ready: false,
+        }))
+        .unwrap();
+        tx.send(ScanMessage::Found(ScanResult {
+            path: PathBuf::from("/b/node_modules"),
+            target_name: "node_modules".to_string(),
+            size: 0,
+            last_modified: None,
+            file_count: 0,
+            git_root: None,
+            size_ready: false,
+        }))
+        .unwrap();
+        tx.send(ScanMessage::StatsReady {
+            path: PathBuf::from("/a/node_modules"),
+            size: 500,
+            file_count: 10,
+        })
+        .unwrap();
+        tx.send(ScanMessage::StatsReady {
+            path: PathBuf::from("/b/node_modules"),
+            size: 200,
+            file_count: 5,
+        })
+        .unwrap();
+        tx.send(ScanMessage::Complete).unwrap();
+        drop(tx);
+
+        app.poll_scan_results();
+
+        // Items present with correct stats
+        assert_eq!(app.items.len(), 2);
+        assert!(app.items.iter().all(|i| i.size_ready));
+        assert_eq!(app.items[0].size, 500);
+        assert_eq!(app.items[1].size, 200);
+
+        // path_index_map populated
+        assert_eq!(app.path_index_map.len(), 2);
+
+        // Sorted by size desc after Complete triggered apply_filter
+        assert!(app.scan_complete);
+        assert_eq!(app.items[app.filtered_indices[0]].size, 500);
+        assert_eq!(app.items[app.filtered_indices[1]].size, 200);
+    }
+
+    #[test]
+    fn test_poll_scan_results_respects_filter() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(rx);
+        app.filter_text = "api".to_string();
+
+        tx.send(ScanMessage::Found(ScanResult {
+            path: PathBuf::from("/projects/api/node_modules"),
+            target_name: "node_modules".to_string(),
+            size: 0,
+            last_modified: None,
+            file_count: 0,
+            git_root: None,
+            size_ready: false,
+        }))
+        .unwrap();
+        tx.send(ScanMessage::Found(ScanResult {
+            path: PathBuf::from("/projects/web/node_modules"),
+            target_name: "node_modules".to_string(),
+            size: 0,
+            last_modified: None,
+            file_count: 0,
+            git_root: None,
+            size_ready: false,
+        }))
+        .unwrap();
+        drop(tx);
+
+        // Poll without Complete — incremental append mode
+        app.poll_scan_results();
+
+        // Both items exist in items vec
+        assert_eq!(app.items.len(), 2);
+        // But only the matching one is in filtered_indices
+        assert_eq!(app.filtered_indices.len(), 1);
+        assert_eq!(
+            app.items[app.filtered_indices[0]].path.to_string_lossy(),
+            "/projects/api/node_modules"
+        );
+    }
 }
