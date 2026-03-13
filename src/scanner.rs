@@ -98,11 +98,7 @@ pub fn scan(
     let _ = ctx.tx.send(ScanMessage::Complete);
 }
 
-fn scan_dir<'scope>(
-    path: PathBuf,
-    ctx: &'scope ScanContext,
-    scope: &rayon::Scope<'scope>,
-) {
+fn scan_dir<'scope>(path: PathBuf, ctx: &'scope ScanContext, scope: &rayon::Scope<'scope>) {
     let entries = match fs::read_dir(&path) {
         Ok(rd) => rd,
         Err(_) => return,
