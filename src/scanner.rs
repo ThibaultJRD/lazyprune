@@ -64,6 +64,15 @@ fn find_git_root(path: &Path) -> Option<PathBuf> {
     }
 }
 
+struct ScanContext {
+    root: PathBuf,
+    targets: Vec<Target>,
+    skip: Vec<String>,
+    include_hidden: bool,
+    tx: mpsc::Sender<ScanMessage>,
+    dirs_scanned: Arc<AtomicU64>,
+}
+
 /// Run the scan synchronously. Sends results via channel as they're found.
 /// Called from a spawned thread.
 pub fn scan(
@@ -73,22 +82,25 @@ pub fn scan(
     include_hidden: bool,
     tx: mpsc::Sender<ScanMessage>,
 ) {
-    let dirs_scanned = Arc::new(AtomicU64::new(0));
+    let ctx = ScanContext {
+        root: root.clone(),
+        targets,
+        skip,
+        include_hidden,
+        tx,
+        dirs_scanned: Arc::new(AtomicU64::new(0)),
+    };
 
     rayon::scope(|s| {
-        scan_dir(root, &targets, &skip, include_hidden, &tx, &dirs_scanned, s);
+        scan_dir(root, &ctx, s);
     });
 
-    let _ = tx.send(ScanMessage::Complete);
+    let _ = ctx.tx.send(ScanMessage::Complete);
 }
 
 fn scan_dir<'scope>(
     path: PathBuf,
-    targets: &'scope [Target],
-    skip: &'scope [String],
-    include_hidden: bool,
-    tx: &mpsc::Sender<ScanMessage>,
-    dirs_scanned: &Arc<AtomicU64>,
+    ctx: &'scope ScanContext,
     scope: &rayon::Scope<'scope>,
 ) {
     let entries = match fs::read_dir(&path) {
@@ -112,24 +124,33 @@ fn scan_dir<'scope>(
             None => continue,
         };
 
-        // Skip list check
-        if skip.iter().any(|s| s == name_str) {
+        // Skip list check: entries without '/' match by dir name,
+        // entries with '/' match by relative path from root
+        let entry_path = entry.path();
+        if ctx.skip.iter().any(|s| {
+            if s.contains('/') {
+                entry_path
+                    .strip_prefix(&ctx.root)
+                    .map(|rel| rel == Path::new(s))
+                    .unwrap_or(false)
+            } else {
+                s == name_str
+            }
+        }) {
             continue;
         }
 
         // Skip hidden dirs that don't match any target (unless --hidden)
-        if !include_hidden
+        if !ctx.include_hidden
             && name_str.starts_with('.')
-            && !targets.iter().any(|t| t.matches_dir_name(name_str))
+            && !ctx.targets.iter().any(|t| t.matches_dir_name(name_str))
         {
             continue;
         }
 
-        let entry_path = entry.path();
-
         // Check if this dir matches a target
         // `path` is the parent directory — use it directly for indicator check
-        let matched_target = targets.iter().find(|t| {
+        let matched_target = ctx.targets.iter().find(|t| {
             if !t.matches_dir_name(name_str) {
                 return false;
             }
@@ -148,7 +169,7 @@ fn scan_dir<'scope>(
             let last_modified = fs::metadata(&entry_path).and_then(|m| m.modified()).ok();
             let git_root = find_git_root(&entry_path);
 
-            let _ = tx.send(ScanMessage::Found(ScanResult {
+            let _ = ctx.tx.send(ScanMessage::Found(ScanResult {
                 path: entry_path,
                 target_name: target.name.clone(),
                 size,
@@ -158,26 +179,15 @@ fn scan_dir<'scope>(
             }));
         } else {
             // Not a target — spawn parallel exploration of this subtree
-            let count = dirs_scanned.fetch_add(1, Ordering::Relaxed) + 1;
+            let count = ctx.dirs_scanned.fetch_add(1, Ordering::Relaxed) + 1;
             if count.is_multiple_of(500) {
-                let _ = tx.send(ScanMessage::Progress {
+                let _ = ctx.tx.send(ScanMessage::Progress {
                     dirs_scanned: count,
                 });
             }
 
-            let tx = tx.clone();
-            let dirs_scanned = Arc::clone(dirs_scanned);
-
             scope.spawn(move |s| {
-                scan_dir(
-                    entry_path,
-                    targets,
-                    skip,
-                    include_hidden,
-                    &tx,
-                    &dirs_scanned,
-                    s,
-                );
+                scan_dir(entry_path, ctx, s);
             });
         }
     }
@@ -483,5 +493,80 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].target_name, ".cache");
+    }
+
+    #[test]
+    fn test_scan_skips_by_relative_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // Target inside a nested path that should be skipped
+        fs::create_dir_all(root.join(".local/share/Steam/node_modules")).unwrap();
+        fs::write(root.join(".local/share/Steam/package.json"), "{}").unwrap();
+
+        // Target outside the skip path that should still be found
+        fs::create_dir_all(root.join("project/node_modules/pkg")).unwrap();
+        fs::write(root.join("project/package.json"), "{}").unwrap();
+        fs::write(
+            root.join("project/node_modules/pkg/index.js"),
+            "x".repeat(100),
+        )
+        .unwrap();
+
+        let targets = vec![Target {
+            name: "node_modules".to_string(),
+            dirs: vec!["node_modules".to_string()],
+            indicator: Some("package.json".to_string()),
+        }];
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        scan(
+            root.to_path_buf(),
+            targets,
+            vec![".local/share/Steam".to_string()],
+            true, // --hidden to enter .local
+            tx,
+        );
+
+        let results = collect_scan_results(rx);
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].path.to_string_lossy().contains("project"));
+    }
+
+    #[test]
+    fn test_scan_skip_path_requires_exact_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // "share/Steam" exists at root but skip is "a/share/Steam"
+        // — should NOT be skipped because the relative path doesn't match
+        fs::create_dir_all(root.join("share/Steam/node_modules")).unwrap();
+        fs::write(root.join("share/Steam/package.json"), "{}").unwrap();
+        fs::write(
+            root.join("share/Steam/node_modules/index.js"),
+            "x".repeat(100),
+        )
+        .unwrap();
+
+        let targets = vec![Target {
+            name: "node_modules".to_string(),
+            dirs: vec!["node_modules".to_string()],
+            indicator: Some("package.json".to_string()),
+        }];
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        scan(
+            root.to_path_buf(),
+            targets,
+            vec!["a/share/Steam".to_string()],
+            false,
+            tx,
+        );
+
+        let results = collect_scan_results(rx);
+
+        // "share/Steam" != "a/share/Steam", so the target inside should be found
+        assert_eq!(results.len(), 1);
     }
 }

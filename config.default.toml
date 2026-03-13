@@ -1,5 +1,25 @@
 root = "~"
-skip = [".Trash", "Library", ".local/share/Steam", ".rustup", ".cargo"]
+# Directories to skip during scan.
+# Simple names (e.g. "Library") match any directory with that name.
+# Paths with "/" (e.g. ".local/share/Steam") match by relative path from root.
+# Hidden entries (dot-prefixed) only matter with --hidden, since hidden dirs
+# are already skipped by default.
+skip = [
+    ".Trash",
+    "Library",
+    "Applications",
+    ".local/share/Steam",
+    ".rustup",
+    ".cargo",
+    ".nvm",
+    ".volta",
+    ".asdf",
+    ".cocoapods",
+    ".pub-cache",
+    ".m2",
+    ".docker",
+    ".orbstack",
+]
 
 [[targets]]
 name = "node_modules"

@@ -26,11 +26,13 @@ cargo install --path .
 ## Usage
 
 ```bash
-lazyprune                        # Scan from $HOME
-lazyprune ~/Develop              # Scan a specific directory
-lazyprune --target node_modules  # Only look for node_modules
-lazyprune --dry-run              # Print results to stdout, no TUI
-lazyprune --init-config          # Generate config at ~/.config/lazyprune/config.toml
+lazyprune                            # Scan from $HOME
+lazyprune ~/Develop                  # Scan a specific directory
+lazyprune -t / --target node_modules # Only look for node_modules
+lazyprune -d / --dry-run             # Print results to stdout, no TUI
+lazyprune -H / --hidden              # Also scan hidden directories (e.g. ~/.cache)
+lazyprune -D / --dir vendor          # Scan for arbitrary directory names (ad-hoc)
+lazyprune --init-config              # Generate config at ~/.config/lazyprune/config.toml
 ```
 
 ## Keybindings
@@ -59,7 +61,7 @@ Default targets are built-in. Override with `~/.config/lazyprune/config.toml`:
 
 ```toml
 root = "~"
-skip = [".Trash", "Library"]
+skip = [".Trash", "Library", "Applications", ".local/share/Steam", ".rustup", ".cargo", ".nvm", ".volta", ".asdf", ".cocoapods", ".pub-cache", ".m2", ".docker", ".orbstack"]
 
 [[targets]]
 name = "node_modules"
