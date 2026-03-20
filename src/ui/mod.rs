@@ -20,6 +20,7 @@ use ratatui::{
 pub fn render(frame: &mut Frame, app: &mut App) {
     let layout = layout::build(frame.area());
 
+    render_tab_bar(frame, app, layout.tab_bar);
     render_header(frame, app, layout.header);
 
     match app.active_tool {
@@ -54,34 +55,45 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 }
 
+fn render_tab_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let active_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let inactive_style = Style::default().fg(Color::DarkGray);
+    let indicator = Span::styled("● ", active_style);
+    let no_indicator = Span::styled("  ", inactive_style);
+
+    let (prune_indicator, prune_style, ports_indicator, ports_style) = match app.active_tool {
+        Tool::Prune => (indicator.clone(), active_style, no_indicator, inactive_style),
+        Tool::Ports => (no_indicator, inactive_style, indicator, active_style),
+    };
+
+    let spans = vec![
+        Span::raw(" "),
+        prune_indicator,
+        Span::styled("Prune", prune_style),
+        Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+        ports_indicator,
+        Span::styled("Ports", ports_style),
+        Span::styled("     ", Style::default()),
+        Span::styled(
+            "Tab/1/2: switch",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ];
+
+    frame.render_widget(
+        ratatui::widgets::Paragraph::new(Line::from(spans)),
+        area,
+    );
+}
+
 fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let max_width = area.width as usize;
 
-    // Mode indicator at the left
-    let mut spans: Vec<Span> = match app.active_tool {
-        Tool::Prune => vec![
-            Span::styled(
-                " [Prune]",
-                Style::default().bg(Color::Cyan).fg(Color::Black),
-            ),
-            Span::raw(" "),
-            Span::styled("Ports", Style::default().fg(Color::DarkGray)),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-        ],
-        Tool::Ports => vec![
-            Span::raw(" "),
-            Span::styled("Prune", Style::default().fg(Color::DarkGray)),
-            Span::raw(" "),
-            Span::styled(
-                "[Ports]",
-                Style::default().bg(Color::Cyan).fg(Color::Black),
-            ),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-        ],
-    };
-
     if app.active_tool == Tool::Ports {
-        // Ports-specific header content
+        let mut spans: Vec<Span> = vec![Span::raw(" ")];
+
         if let Some(ports) = &app.ports {
             let port_count = ports.filtered_indices.len();
             let sort_label = ports.sort_mode.label();
@@ -90,10 +102,10 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 format!("{port_count} ports"),
                 Style::default().fg(Color::White),
             ));
-            spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
             spans.push(Span::styled("Sort: ", Style::default().fg(Color::DarkGray)));
             spans.push(Span::styled(sort_label, Style::default().fg(Color::Cyan)));
-            spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
             spans.push(Span::styled(
                 "Dev filter: ",
                 Style::default().fg(Color::DarkGray),
@@ -110,7 +122,7 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             if !ports.scan_complete {
                 let spinner =
                     SPINNER_FRAMES[(app.prune.scan_tick as usize) % SPINNER_FRAMES.len()];
-                spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+                spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
                 spans.push(Span::styled(
                     format!("{spinner} Scanning..."),
                     Style::default().fg(Color::Yellow),
@@ -129,6 +141,8 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         );
         return;
     }
+
+    let mut spans: Vec<Span> = vec![Span::raw(" ")];
 
     let type_label = match &app.prune.type_filter {
         Some(t) => t.as_str(),
