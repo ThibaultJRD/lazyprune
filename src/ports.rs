@@ -1,10 +1,300 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 
+use ratatui::widgets::ListState;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Protocol {
     Tcp,
     Udp,
+}
+
+// ── Sort mode ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortsSortMode {
+    PortAsc,
+    PortDesc,
+    ProcessName,
+    PidAsc,
+}
+
+impl PortsSortMode {
+    pub fn next(self) -> Self {
+        match self {
+            PortsSortMode::PortAsc => PortsSortMode::PortDesc,
+            PortsSortMode::PortDesc => PortsSortMode::ProcessName,
+            PortsSortMode::ProcessName => PortsSortMode::PidAsc,
+            PortsSortMode::PidAsc => PortsSortMode::PortAsc,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PortsSortMode::PortAsc => "Port \u{2191}",
+            PortsSortMode::PortDesc => "Port \u{2193}",
+            PortsSortMode::ProcessName => "Process",
+            PortsSortMode::PidAsc => "PID",
+        }
+    }
+}
+
+// ── Kill messages ─────────────────────────────────────────────────────────────
+
+pub enum KillMessage {
+    Killing { port: u16, pid: u32, process: String },
+    Killed { port: u16, pid: u32 },
+    Error { port: u16, pid: u32, error: String },
+    Complete,
+}
+
+// ── PortsState ────────────────────────────────────────────────────────────────
+
+pub struct PortsState {
+    pub items: Vec<PortInfo>,
+    pub filtered_indices: Vec<usize>,
+    pub selected: Vec<bool>,
+    pub list_state: ListState,
+    pub sort_mode: PortsSortMode,
+    pub filter_text: String,
+    pub protocol_filter: Option<Protocol>,
+    pub protocol_filter_cursor: usize,
+    pub dev_filter_active: bool,
+    pub dev_filter_ports: HashSet<u16>,
+    pub scan_complete: bool,
+    pub scan_rx: Option<mpsc::Receiver<PortScanMessage>>,
+    pub kill_rx: Option<mpsc::Receiver<KillMessage>>,
+    pub kill_progress: usize,
+    pub kill_total: usize,
+    pub kill_current: String,
+    pub kill_errors: Vec<String>,
+}
+
+impl PortsState {
+    pub fn new() -> Self {
+        let mut list_state = ListState::default();
+        list_state.select(Some(0));
+        Self {
+            items: Vec::new(),
+            filtered_indices: Vec::new(),
+            selected: Vec::new(),
+            list_state,
+            sort_mode: PortsSortMode::PortAsc,
+            filter_text: String::new(),
+            protocol_filter: None,
+            protocol_filter_cursor: 0,
+            dev_filter_active: false,
+            dev_filter_ports: HashSet::new(),
+            scan_complete: false,
+            scan_rx: None,
+            kill_rx: None,
+            kill_progress: 0,
+            kill_total: 0,
+            kill_current: String::new(),
+            kill_errors: Vec::new(),
+        }
+    }
+
+    /// Start a port scan in a background thread.
+    pub fn start_scan(&mut self, dev_filter: Option<HashSet<u16>>) {
+        self.items.clear();
+        self.filtered_indices.clear();
+        self.selected.clear();
+        self.scan_complete = false;
+
+        let (tx, rx) = mpsc::channel();
+        self.scan_rx = Some(rx);
+        std::thread::spawn(move || scan_ports(tx, dev_filter));
+    }
+
+    /// Drain the scan channel non-blocking.
+    pub fn poll_scan_results(&mut self) {
+        let rx = match self.scan_rx.as_ref() {
+            Some(rx) => rx,
+            None => return,
+        };
+
+        loop {
+            match rx.try_recv() {
+                Ok(msg) => match msg {
+                    PortScanMessage::Found(info) => {
+                        self.items.push(info);
+                        self.selected.push(false);
+                    }
+                    PortScanMessage::Complete => {
+                        self.scan_complete = true;
+                        self.scan_rx = None;
+                        self.apply_filter();
+                        return;
+                    }
+                    PortScanMessage::Error(_) => {}
+                },
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.scan_complete = true;
+                    self.scan_rx = None;
+                    self.apply_filter();
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Return the item currently under the cursor.
+    pub fn current_item(&self) -> Option<&PortInfo> {
+        let idx = self.list_state.selected()?;
+        let &item_idx = self.filtered_indices.get(idx)?;
+        self.items.get(item_idx)
+    }
+
+    /// Check if a single item passes the current text and protocol filters.
+    pub fn item_passes_filter(&self, info: &PortInfo) -> bool {
+        if !self.filter_text.is_empty() {
+            let lower = self.filter_text.to_lowercase();
+            let port_str = info.port.to_string();
+            let pid_str = info.pid.to_string();
+            let name_lower = info.process_name.to_lowercase();
+            if !port_str.contains(&lower)
+                && !name_lower.contains(&lower)
+                && !pid_str.contains(&lower)
+            {
+                return false;
+            }
+        }
+        if let Some(proto) = self.protocol_filter {
+            if info.protocol != proto {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Rebuild filtered_indices: filter then sort.
+    pub fn apply_filter(&mut self) {
+        let mut indices: Vec<usize> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, info)| self.item_passes_filter(info))
+            .map(|(i, _)| i)
+            .collect();
+
+        match self.sort_mode {
+            PortsSortMode::PortAsc => {
+                indices.sort_unstable_by_key(|&i| self.items[i].port);
+            }
+            PortsSortMode::PortDesc => {
+                indices.sort_unstable_by(|&a, &b| self.items[b].port.cmp(&self.items[a].port));
+            }
+            PortsSortMode::ProcessName => {
+                indices.sort_unstable_by(|&a, &b| {
+                    self.items[a]
+                        .process_name
+                        .cmp(&self.items[b].process_name)
+                });
+            }
+            PortsSortMode::PidAsc => {
+                indices.sort_unstable_by_key(|&i| self.items[i].pid);
+            }
+        }
+
+        self.filtered_indices = indices;
+
+        // Clamp cursor
+        if self.filtered_indices.is_empty() {
+            self.list_state.select(Some(0));
+        } else {
+            let current = self.list_state.selected().unwrap_or(0);
+            if current >= self.filtered_indices.len() {
+                self.list_state
+                    .select(Some(self.filtered_indices.len() - 1));
+            }
+        }
+    }
+
+    /// Toggle selection of the item at the given visible position.
+    pub fn toggle_selection(&mut self, pos: usize) {
+        if let Some(&item_idx) = self.filtered_indices.get(pos) {
+            if item_idx < self.selected.len() {
+                self.selected[item_idx] = !self.selected[item_idx];
+            }
+        }
+    }
+
+    /// Select all visible (filtered) items.
+    pub fn select_all(&mut self) {
+        for &idx in &self.filtered_indices {
+            if idx < self.selected.len() {
+                self.selected[idx] = true;
+            }
+        }
+    }
+
+    /// Invert selection of all visible (filtered) items.
+    pub fn invert_selection(&mut self) {
+        for &idx in &self.filtered_indices {
+            if idx < self.selected.len() {
+                self.selected[idx] = !self.selected[idx];
+            }
+        }
+    }
+
+    /// Count of selected items.
+    pub fn selected_count(&self) -> usize {
+        self.selected.iter().filter(|&&s| s).count()
+    }
+
+    /// Move cursor down.
+    pub fn next(&mut self) {
+        if self.filtered_indices.is_empty() {
+            return;
+        }
+        let current = self.list_state.selected().unwrap_or(0);
+        let next = (current + 1).min(self.filtered_indices.len() - 1);
+        self.list_state.select(Some(next));
+    }
+
+    /// Move cursor up.
+    pub fn previous(&mut self) {
+        if self.filtered_indices.is_empty() {
+            return;
+        }
+        let current = self.list_state.selected().unwrap_or(0);
+        let prev = current.saturating_sub(1);
+        self.list_state.select(Some(prev));
+    }
+
+    /// Jump to the top of the list.
+    pub fn go_top(&mut self) {
+        if !self.filtered_indices.is_empty() {
+            self.list_state.select(Some(0));
+        }
+    }
+
+    /// Jump to the bottom of the list.
+    pub fn go_bottom(&mut self) {
+        if !self.filtered_indices.is_empty() {
+            let last = self.filtered_indices.len() - 1;
+            self.list_state.select(Some(last));
+        }
+    }
+
+    /// Cycle sort mode and re-apply filter.
+    pub fn cycle_sort(&mut self) {
+        self.sort_mode = self.sort_mode.next();
+        self.apply_filter();
+    }
+
+    /// Return references to all selected items.
+    pub fn selected_items(&self) -> Vec<&PortInfo> {
+        self.items
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| self.selected.get(*i).copied().unwrap_or(false))
+            .map(|(_, item)| item)
+            .collect()
+    }
+
 }
 
 /// Internal struct used during lsof parsing, before deduplication.
@@ -322,4 +612,79 @@ mod tests {
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].port, 3000);
     }
+
+    // ── PortsState tests ──────────────────────────────────────────────────────
+
+    fn make_port_info(port: u16, process: &str) -> PortInfo {
+        PortInfo {
+            port,
+            protocol: Protocol::Tcp,
+            pid: port as u32,
+            process_name: process.into(),
+            command: String::new(),
+            user: "test".into(),
+            state: "LISTEN".into(),
+            connections: 1,
+        }
+    }
+
+    fn make_port_info_udp(port: u16, process: &str) -> PortInfo {
+        PortInfo {
+            port,
+            protocol: Protocol::Udp,
+            pid: port as u32,
+            process_name: process.into(),
+            command: String::new(),
+            user: "test".into(),
+            state: String::new(),
+            connections: 1,
+        }
+    }
+
+    #[test]
+    fn test_ports_state_filter_text() {
+        let mut state = PortsState::new();
+        state.items = vec![make_port_info(3000, "node"), make_port_info(8080, "java")];
+        state.selected = vec![false; 2];
+        state.filter_text = "node".into();
+        state.apply_filter();
+        assert_eq!(state.filtered_indices.len(), 1);
+        assert_eq!(state.items[state.filtered_indices[0]].port, 3000);
+    }
+
+    #[test]
+    fn test_ports_state_sort_by_port() {
+        let mut state = PortsState::new();
+        state.items = vec![make_port_info(8080, "java"), make_port_info(3000, "node")];
+        state.selected = vec![false; 2];
+        state.sort_mode = PortsSortMode::PortAsc;
+        state.apply_filter();
+        assert_eq!(state.items[state.filtered_indices[0]].port, 3000);
+        assert_eq!(state.items[state.filtered_indices[1]].port, 8080);
+    }
+
+    #[test]
+    fn test_ports_state_protocol_filter() {
+        let mut state = PortsState::new();
+        state.items = vec![
+            make_port_info(3000, "node"),
+            make_port_info_udp(5353, "mDNSResponder"),
+        ];
+        state.selected = vec![false; 2];
+        state.protocol_filter = Some(Protocol::Tcp);
+        state.apply_filter();
+        assert_eq!(state.filtered_indices.len(), 1);
+    }
+
+    #[test]
+    fn test_ports_state_selection() {
+        let mut state = PortsState::new();
+        state.items = vec![make_port_info(3000, "node"), make_port_info(3001, "node")];
+        state.selected = vec![false; 2];
+        state.apply_filter();
+        state.toggle_selection(0);
+        assert!(state.selected[state.filtered_indices[0]]);
+        assert_eq!(state.selected_count(), 1);
+    }
+
 }

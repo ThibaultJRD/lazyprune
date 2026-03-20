@@ -1,4 +1,5 @@
-use crate::config::Config;
+use crate::config::{parse_port_filter, Config};
+use crate::ports::PortsState;
 use crate::scanner::{ScanMessage, ScanResult};
 use ratatui::widgets::ListState;
 use std::sync::mpsc;
@@ -131,6 +132,7 @@ pub struct PruneState {
 pub struct App {
     pub active_tool: Tool,
     pub prune: PruneState,
+    pub ports: Option<PortsState>,
     pub mode: AppMode,
     pub focus: FocusPanel,
     pub exit: bool,
@@ -178,11 +180,33 @@ impl App {
                 path_index_map: std::collections::HashMap::new(),
             },
             active_tool: Tool::Prune,
+            ports: None,
             mode: AppMode::Normal,
             focus: FocusPanel::List,
             exit: false,
             config,
         }
+    }
+
+    /// Lazily initialize PortsState and start the port scan if not yet done.
+    pub fn ensure_ports_initialized(&mut self) {
+        if self.ports.is_some() {
+            return;
+        }
+
+        let dev_filter = if self.config.ports.dev_filter_enabled {
+            Some(parse_port_filter(&self.config.ports.dev_filter))
+        } else {
+            None
+        };
+
+        let mut state = PortsState::new();
+        if let Some(ref ports) = dev_filter {
+            state.dev_filter_active = true;
+            state.dev_filter_ports = ports.clone();
+        }
+        state.start_scan(dev_filter);
+        self.ports = Some(state);
     }
 
     /// Drain the scan channel non-blocking, adding results and tracking progress.
