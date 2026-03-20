@@ -64,7 +64,12 @@ fn render_tab_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let no_indicator = Span::styled("  ", inactive_style);
 
     let (prune_indicator, prune_style, ports_indicator, ports_style) = match app.active_tool {
-        Tool::Prune => (indicator.clone(), active_style, no_indicator, inactive_style),
+        Tool::Prune => (
+            indicator.clone(),
+            active_style,
+            no_indicator,
+            inactive_style,
+        ),
         Tool::Ports => (no_indicator, inactive_style, indicator, active_style),
     };
 
@@ -76,16 +81,10 @@ fn render_tab_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         ports_indicator,
         Span::styled("Ports", ports_style),
         Span::styled("     ", Style::default()),
-        Span::styled(
-            "Tab/1/2: switch",
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled("Tab/1/2: switch", Style::default().fg(Color::DarkGray)),
     ];
 
-    frame.render_widget(
-        ratatui::widgets::Paragraph::new(Line::from(spans)),
-        area,
-    );
+    frame.render_widget(ratatui::widgets::Paragraph::new(Line::from(spans)), area);
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -120,8 +119,7 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             ));
 
             if !ports.scan_complete {
-                let spinner =
-                    SPINNER_FRAMES[(app.prune.scan_tick as usize) % SPINNER_FRAMES.len()];
+                let spinner = SPINNER_FRAMES[(app.prune.scan_tick as usize) % SPINNER_FRAMES.len()];
                 spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
                 spans.push(Span::styled(
                     format!("{spinner} Scanning..."),
@@ -135,10 +133,7 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             ));
         }
 
-        frame.render_widget(
-            ratatui::widgets::Paragraph::new(Line::from(spans)),
-            area,
-        );
+        frame.render_widget(ratatui::widgets::Paragraph::new(Line::from(spans)), area);
         return;
     }
 
@@ -154,7 +149,10 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         Span::styled(type_label, Style::default().fg(Color::Cyan)),
         Span::styled("] ", Style::default().fg(Color::DarkGray)),
         Span::styled("[Sort: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(app.prune.sort_mode.label(), Style::default().fg(Color::Cyan)),
+        Span::styled(
+            app.prune.sort_mode.label(),
+            Style::default().fg(Color::Cyan),
+        ),
         Span::styled("]  ", Style::default().fg(Color::DarkGray)),
     ]);
 

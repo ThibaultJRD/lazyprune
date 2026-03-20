@@ -313,7 +313,10 @@ pub fn render_kill_confirm(frame: &mut Frame, app: &App) {
         Span::raw(" Cancel"),
     ]));
 
-    let title = format!(" Kill {count} process{}? ", if count == 1 { "" } else { "es" });
+    let title = format!(
+        " Kill {count} process{}? ",
+        if count == 1 { "" } else { "es" }
+    );
 
     let max_line_len = lines
         .iter()
@@ -364,7 +367,11 @@ pub fn render_killing(frame: &mut Frame, app: &App) {
     let bar_width = (width - 6) as usize;
     let filled = (bar_width as f64 * progress as f64 / total.max(1) as f64) as usize;
     let empty = bar_width - filled;
-    let bar = format!("  {}{}", "\u{2588}".repeat(filled), "\u{2591}".repeat(empty));
+    let bar = format!(
+        "  {}{}",
+        "\u{2588}".repeat(filled),
+        "\u{2591}".repeat(empty)
+    );
 
     let current = if ports.kill_current.is_empty() {
         String::new()

@@ -549,12 +549,7 @@ fn handle_ports_normal_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers
             }
         }
         KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
-            if app
-                .ports
-                .as_ref()
-                .and_then(|p| p.current_item())
-                .is_some()
-            {
+            if app.ports.as_ref().and_then(|p| p.current_item()).is_some() {
                 app.focus = app::FocusPanel::Details;
             }
         }

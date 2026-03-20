@@ -65,11 +65,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let lines = vec![
         Line::from(vec![
             Span::styled("  Port:         ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                item.port.to_string(),
-                Style::default()
-                    .fg(Color::Yellow),
-            ),
+            Span::styled(item.port.to_string(), Style::default().fg(Color::Yellow)),
         ]),
         Line::from(vec![
             Span::styled("  Protocol:     ", Style::default().fg(Color::DarkGray)),

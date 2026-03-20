@@ -45,9 +45,20 @@ impl PortsSortMode {
 
 #[allow(dead_code)]
 pub enum KillMessage {
-    Killing { port: u16, pid: u32, process: String },
-    Killed { port: u16, pid: u32 },
-    Error { port: u16, pid: u32, error: String },
+    Killing {
+        port: u16,
+        pid: u32,
+        process: String,
+    },
+    Killed {
+        port: u16,
+        pid: u32,
+    },
+    Error {
+        port: u16,
+        pid: u32,
+        error: String,
+    },
     Complete,
 }
 
@@ -191,9 +202,7 @@ impl PortsState {
             }
             PortsSortMode::ProcessName => {
                 indices.sort_unstable_by(|&a, &b| {
-                    self.items[a]
-                        .process_name
-                        .cmp(&self.items[b].process_name)
+                    self.items[a].process_name.cmp(&self.items[b].process_name)
                 });
             }
             PortsSortMode::PidAsc => {
@@ -381,8 +390,7 @@ fn verify_process(pid: u32, expected_name: &str) -> bool {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let actual = stdout.trim();
     // ps may truncate the command name, so check if either string contains the other
-    !actual.is_empty()
-        && (actual.contains(expected_name) || expected_name.contains(actual))
+    !actual.is_empty() && (actual.contains(expected_name) || expected_name.contains(actual))
 }
 
 /// Kill each target process with SIGTERM, wait 500 ms, then SIGKILL if still alive.
@@ -472,7 +480,10 @@ pub enum PortScanMessage {
 pub fn parse_port_from_name(name: &str) -> Option<(u16, String)> {
     // Extract optional trailing state like "(LISTEN)" or "(ESTABLISHED)"
     let (addr_part, state) = if let Some(idx) = name.rfind('(') {
-        let state_raw = name[idx..].trim_matches(|c| c == '(' || c == ')').trim().to_string();
+        let state_raw = name[idx..]
+            .trim_matches(|c| c == '(' || c == ')')
+            .trim()
+            .to_string();
         (name[..idx].trim(), state_raw)
     } else {
         (name.trim(), String::new())
@@ -639,10 +650,7 @@ pub fn scan_ports(tx: mpsc::Sender<PortScanMessage>, dev_filter: Option<HashSet<
 
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    let entries: Vec<PortEntry> = stdout
-        .lines()
-        .filter_map(parse_lsof_line)
-        .collect();
+    let entries: Vec<PortEntry> = stdout.lines().filter_map(parse_lsof_line).collect();
 
     let mut port_infos = dedup_port_entries(entries);
 
@@ -713,12 +721,30 @@ mod tests {
     #[test]
     fn test_dedup_ports() {
         let entries = vec![
-            PortEntry { port: 3000, protocol: Protocol::Tcp, pid: 123,
-                        process_name: "node".into(), user: "me".into(), state: "LISTEN".into() },
-            PortEntry { port: 3000, protocol: Protocol::Tcp, pid: 123,
-                        process_name: "node".into(), user: "me".into(), state: "ESTABLISHED".into() },
-            PortEntry { port: 3000, protocol: Protocol::Tcp, pid: 124,
-                        process_name: "node".into(), user: "me".into(), state: "ESTABLISHED".into() },
+            PortEntry {
+                port: 3000,
+                protocol: Protocol::Tcp,
+                pid: 123,
+                process_name: "node".into(),
+                user: "me".into(),
+                state: "LISTEN".into(),
+            },
+            PortEntry {
+                port: 3000,
+                protocol: Protocol::Tcp,
+                pid: 123,
+                process_name: "node".into(),
+                user: "me".into(),
+                state: "ESTABLISHED".into(),
+            },
+            PortEntry {
+                port: 3000,
+                protocol: Protocol::Tcp,
+                pid: 124,
+                process_name: "node".into(),
+                user: "me".into(),
+                state: "ESTABLISHED".into(),
+            },
         ];
         let deduped = dedup_port_entries(entries);
         assert_eq!(deduped.len(), 1);
@@ -728,22 +754,50 @@ mod tests {
 
     #[test]
     fn test_parse_port_from_name_column() {
-        assert_eq!(parse_port_from_name("*:3000 (LISTEN)"), Some((3000, "LISTEN".to_string())));
+        assert_eq!(
+            parse_port_from_name("*:3000 (LISTEN)"),
+            Some((3000, "LISTEN".to_string()))
+        );
         assert_eq!(parse_port_from_name("*:5353"), Some((5353, "".to_string())));
-        assert_eq!(parse_port_from_name("127.0.0.1:8080->127.0.0.1:52341 (ESTABLISHED)"), Some((8080, "ESTABLISHED".to_string())));
-        assert_eq!(parse_port_from_name("[::1]:3000 (LISTEN)"), Some((3000, "LISTEN".to_string())));
+        assert_eq!(
+            parse_port_from_name("127.0.0.1:8080->127.0.0.1:52341 (ESTABLISHED)"),
+            Some((8080, "ESTABLISHED".to_string()))
+        );
+        assert_eq!(
+            parse_port_from_name("[::1]:3000 (LISTEN)"),
+            Some((3000, "LISTEN".to_string()))
+        );
     }
 
     #[test]
     fn test_dev_filter() {
         let filter: HashSet<u16> = (3000..=3009).collect();
         let entries = vec![
-            PortInfo { port: 3000, protocol: Protocol::Tcp, pid: 1, process_name: "node".into(),
-                       command: "".into(), user: "me".into(), state: "LISTEN".into(), connections: 1 },
-            PortInfo { port: 22, protocol: Protocol::Tcp, pid: 2, process_name: "sshd".into(),
-                       command: "".into(), user: "root".into(), state: "LISTEN".into(), connections: 1 },
+            PortInfo {
+                port: 3000,
+                protocol: Protocol::Tcp,
+                pid: 1,
+                process_name: "node".into(),
+                command: "".into(),
+                user: "me".into(),
+                state: "LISTEN".into(),
+                connections: 1,
+            },
+            PortInfo {
+                port: 22,
+                protocol: Protocol::Tcp,
+                pid: 2,
+                process_name: "sshd".into(),
+                command: "".into(),
+                user: "root".into(),
+                state: "LISTEN".into(),
+                connections: 1,
+            },
         ];
-        let filtered: Vec<_> = entries.into_iter().filter(|p| filter.contains(&p.port)).collect();
+        let filtered: Vec<_> = entries
+            .into_iter()
+            .filter(|p| filter.contains(&p.port))
+            .collect();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].port, 3000);
     }

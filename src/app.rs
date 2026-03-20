@@ -685,31 +685,27 @@ impl App {
                 }
                 SortMode::DateDesc => {
                     group_list.sort_unstable_by(|a, b| {
-                        let date_a = a
-                            .1
-                            .iter()
-                            .filter_map(|&i| self.prune.items[i].last_modified)
-                            .max();
-                        let date_b = b
-                            .1
-                            .iter()
-                            .filter_map(|&i| self.prune.items[i].last_modified)
-                            .max();
+                        let date_a =
+                            a.1.iter()
+                                .filter_map(|&i| self.prune.items[i].last_modified)
+                                .max();
+                        let date_b =
+                            b.1.iter()
+                                .filter_map(|&i| self.prune.items[i].last_modified)
+                                .max();
                         date_b.cmp(&date_a).then_with(|| a.0.cmp(&b.0))
                     });
                 }
                 SortMode::DateAsc => {
                     group_list.sort_unstable_by(|a, b| {
-                        let date_a = a
-                            .1
-                            .iter()
-                            .filter_map(|&i| self.prune.items[i].last_modified)
-                            .min();
-                        let date_b = b
-                            .1
-                            .iter()
-                            .filter_map(|&i| self.prune.items[i].last_modified)
-                            .min();
+                        let date_a =
+                            a.1.iter()
+                                .filter_map(|&i| self.prune.items[i].last_modified)
+                                .min();
+                        let date_b =
+                            b.1.iter()
+                                .filter_map(|&i| self.prune.items[i].last_modified)
+                                .min();
                         date_a.cmp(&date_b).then_with(|| a.0.cmp(&b.0))
                     });
                 }
