@@ -697,6 +697,7 @@ dependencies = [
  "clap",
  "crossterm",
  "dirs",
+ "nix",
  "ratatui",
  "rayon",
  "serde",
