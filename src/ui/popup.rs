@@ -86,7 +86,7 @@ pub fn render_confirm(frame: &mut Frame, app: &App) {
     frame.render_widget(paragraph, area);
 }
 
-pub fn render_deleting(frame: &mut Frame, app: &App) {
+pub fn render_processing(frame: &mut Frame, app: &App) {
     let progress = app.delete_progress;
     let total = app.delete_total;
     let pct = if total > 0 {
@@ -131,7 +131,7 @@ pub fn render_deleting(frame: &mut Frame, app: &App) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-pub fn render_type_filter(frame: &mut Frame, app: &App) {
+pub fn render_sub_filter(frame: &mut Frame, app: &App) {
     let type_count = app.available_types.len();
     // "All" + each type + blank line + instructions line
     let height = (type_count as u16) + 1 + 2 + 1; // +1 for "All", +2 borders, +1 instructions

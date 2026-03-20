@@ -149,7 +149,7 @@ fn main() -> io::Result<()> {
 
 fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
     while !app.exit {
-        if app.mode == AppMode::Deleting {
+        if app.mode == AppMode::Processing {
             app.poll_delete_results();
             terminal.draw(|frame| render(frame, app))?;
             if event::poll(Duration::from_millis(50))? {
@@ -193,10 +193,10 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             }
         }
         AppMode::Filter => handle_filter_key(app, key.code),
-        AppMode::TypeFilter => handle_type_filter_key(app, key.code),
+        AppMode::SubFilter => handle_sub_filter_key(app, key.code),
         AppMode::Confirm => handle_confirm_key(app, key.code),
         AppMode::Help => handle_help_key(app, key.code),
-        AppMode::Deleting => {} // No input during deletion
+        AppMode::Processing => {} // No input during processing
     }
 }
 
@@ -216,7 +216,7 @@ fn handle_normal_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('t') => {
             if !app.available_types.is_empty() {
                 app.type_filter_cursor = 0;
-                app.mode = AppMode::TypeFilter;
+                app.mode = AppMode::SubFilter;
             }
         }
         KeyCode::Char('d') => {
@@ -275,7 +275,7 @@ fn handle_filter_key(app: &mut App, code: KeyCode) {
     }
 }
 
-fn handle_type_filter_key(app: &mut App, code: KeyCode) {
+fn handle_sub_filter_key(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Esc | KeyCode::Char('t') => {
             app.mode = AppMode::Normal;

@@ -26,8 +26,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Overlays
     match app.mode {
         AppMode::Confirm => popup::render_confirm(frame, app),
-        AppMode::Deleting => popup::render_deleting(frame, app),
-        AppMode::TypeFilter => popup::render_type_filter(frame, app),
+        AppMode::Processing => popup::render_processing(frame, app),
+        AppMode::SubFilter => popup::render_sub_filter(frame, app),
         AppMode::Help => popup::render_help(frame),
         _ => {}
     }

@@ -53,9 +53,9 @@ impl SortMode {
 pub enum AppMode {
     Normal,
     Filter,
-    TypeFilter,
+    SubFilter,
     Confirm,
-    Deleting,
+    Processing,
     Help,
 }
 
@@ -435,7 +435,7 @@ impl App {
 
         let (tx, rx) = mpsc::channel();
         self.delete_rx = Some(rx);
-        self.mode = AppMode::Deleting;
+        self.mode = AppMode::Processing;
 
         std::thread::spawn(move || {
             use rayon::prelude::*;
