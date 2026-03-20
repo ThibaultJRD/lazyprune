@@ -132,15 +132,15 @@ fn main() -> io::Result<()> {
     }
 
     let mut terminal = ratatui::init();
-    let mut app = App::new(rx);
+    let mut app = App::new(rx, config);
     let result = run(&mut terminal, &mut app);
     ratatui::restore();
 
-    if app.items_deleted > 0 {
+    if app.prune.items_deleted > 0 {
         println!(
             "lazyprune: deleted {} items, freed {}",
-            app.items_deleted,
-            format_size(app.total_deleted),
+            app.prune.items_deleted,
+            format_size(app.prune.total_deleted),
         );
     }
 
@@ -166,8 +166,8 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
         app.poll_tree_results();
         app.maybe_start_tree_scan();
 
-        if !app.scan_complete || app.tree_loading {
-            app.scan_tick = app.scan_tick.wrapping_add(1);
+        if !app.prune.scan_complete || app.prune.tree_loading {
+            app.prune.scan_tick = app.prune.scan_tick.wrapping_add(1);
         }
 
         terminal.draw(|frame| render(frame, app))?;
@@ -214,8 +214,8 @@ fn handle_normal_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('p') => app.toggle_project_grouping(),
         KeyCode::Char('/') => app.mode = AppMode::Filter,
         KeyCode::Char('t') => {
-            if !app.available_types.is_empty() {
-                app.type_filter_cursor = 0;
+            if !app.prune.available_types.is_empty() {
+                app.prune.type_filter_cursor = 0;
                 app.mode = AppMode::SubFilter;
             }
         }
@@ -256,7 +256,7 @@ fn handle_details_key(app: &mut App, code: KeyCode) {
 fn handle_filter_key(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Esc => {
-            app.filter_text.clear();
+            app.prune.filter_text.clear();
             app.apply_filter();
             app.mode = AppMode::Normal;
         }
@@ -264,11 +264,11 @@ fn handle_filter_key(app: &mut App, code: KeyCode) {
             app.mode = AppMode::Normal;
         }
         KeyCode::Backspace => {
-            app.filter_text.pop();
+            app.prune.filter_text.pop();
             app.apply_filter();
         }
         KeyCode::Char(c) => {
-            app.filter_text.push(c);
+            app.prune.filter_text.push(c);
             app.apply_filter();
         }
         _ => {}
@@ -281,22 +281,22 @@ fn handle_sub_filter_key(app: &mut App, code: KeyCode) {
             app.mode = AppMode::Normal;
         }
         KeyCode::Char('j') | KeyCode::Down => {
-            if !app.available_types.is_empty() {
+            if !app.prune.available_types.is_empty() {
                 // cursor 0 = "All", then 1..=len for each type
-                let max = app.available_types.len();
-                app.type_filter_cursor = (app.type_filter_cursor + 1).min(max);
+                let max = app.prune.available_types.len();
+                app.prune.type_filter_cursor = (app.prune.type_filter_cursor + 1).min(max);
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            app.type_filter_cursor = app.type_filter_cursor.saturating_sub(1);
+            app.prune.type_filter_cursor = app.prune.type_filter_cursor.saturating_sub(1);
         }
         KeyCode::Enter => {
-            if app.type_filter_cursor == 0 {
-                app.type_filter = None;
+            if app.prune.type_filter_cursor == 0 {
+                app.prune.type_filter = None;
             } else {
-                let idx = app.type_filter_cursor - 1;
-                if let Some(t) = app.available_types.get(idx) {
-                    app.type_filter = Some(t.clone());
+                let idx = app.prune.type_filter_cursor - 1;
+                if let Some(t) = app.prune.available_types.get(idx) {
+                    app.prune.type_filter = Some(t.clone());
                 }
             }
             app.apply_filter();

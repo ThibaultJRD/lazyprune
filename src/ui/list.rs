@@ -40,23 +40,25 @@ fn shorten_path(path: Option<&std::path::Path>) -> String {
 }
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
-    let selected_pos = app.list_state.selected();
+    let selected_pos = app.prune.list_state.selected();
 
     let items: Vec<ListItem> = app
+        .prune
         .filtered_indices
         .iter()
         .enumerate()
         .map(|(pos, &idx)| {
             // Render separator line
-            if app.group_separators.contains(&pos) {
+            if app.prune.group_separators.contains(&pos) {
                 let next_idx = app
+                    .prune
                     .filtered_indices
                     .iter()
                     .skip(pos + 1)
                     .find(|&&i| i != usize::MAX);
                 let (label, group_size) = match next_idx {
                     Some(&item_idx) => {
-                        let item = &app.items[item_idx];
+                        let item = &app.prune.items[item_idx];
                         let project_label = item
                             .git_root
                             .as_ref()
@@ -67,12 +69,12 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 
                         let mut size = 0u64;
                         let mut count = 0usize;
-                        for i in (pos + 1)..app.filtered_indices.len() {
-                            if app.group_separators.contains(&i) {
+                        for i in (pos + 1)..app.prune.filtered_indices.len() {
+                            if app.prune.group_separators.contains(&i) {
                                 break;
                             }
-                            let gi = app.filtered_indices[i];
-                            size += app.items[gi].size;
+                            let gi = app.prune.filtered_indices[i];
+                            size += app.prune.items[gi].size;
                             count += 1;
                         }
                         let size_label = crate::format_size(size);
@@ -84,8 +86,8 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 return ListItem::new(Line::styled(sep_text, Style::default().fg(Color::Cyan)));
             }
 
-            let item = &app.items[idx];
-            let is_selected = app.selected[idx];
+            let item = &app.prune.items[idx];
+            let is_selected = app.prune.selected[idx];
             let is_highlighted = selected_pos == Some(pos);
 
             let marker = if is_selected { "● " } else { "  " };
@@ -146,7 +148,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
 
-    let item_count = app.filtered_indices.len() - app.group_separators.len();
+    let item_count = app.prune.filtered_indices.len() - app.prune.group_separators.len();
     let title = format!(" {} items ", item_count);
     let border_color = if app.focus == crate::app::FocusPanel::List {
         Color::Cyan
@@ -167,7 +169,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         );
 
-    frame.render_stateful_widget(list, area, &mut app.list_state);
+    frame.render_stateful_widget(list, area, &mut app.prune.list_state);
 }
 
 fn age_color(last_modified: Option<SystemTime>) -> Color {

@@ -36,7 +36,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let max_width = area.width as usize;
 
-    let type_label = match &app.type_filter {
+    let type_label = match &app.prune.type_filter {
         Some(t) => t.as_str(),
         None => "All",
     };
@@ -46,19 +46,19 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         Span::styled(type_label, Style::default().fg(Color::Cyan)),
         Span::styled("] ", Style::default().fg(Color::DarkGray)),
         Span::styled("[Sort: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(app.sort_mode.label(), Style::default().fg(Color::Cyan)),
+        Span::styled(app.prune.sort_mode.label(), Style::default().fg(Color::Cyan)),
         Span::styled("]  ", Style::default().fg(Color::DarkGray)),
     ];
 
-    if app.project_grouping {
+    if app.prune.project_grouping {
         spans.push(Span::styled(
             "[Project \u{2713}] ",
             Style::default().fg(Color::Cyan),
         ));
     }
 
-    if app.scan_complete {
-        let total_size: u64 = app.items.iter().map(|i| i.size).sum();
+    if app.prune.scan_complete {
+        let total_size: u64 = app.prune.items.iter().map(|i| i.size).sum();
         let total_span_text = format!("Total: {}", format_size(total_size));
 
         // Calculate base width (prefix + total)
@@ -72,13 +72,15 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         let mut types_shown = 0;
         let mut current_type_width = 0;
 
-        for (i, type_name) in app.available_types.iter().enumerate() {
+        for (i, type_name) in app.prune.available_types.iter().enumerate() {
             let count = app
+                .prune
                 .items
                 .iter()
                 .filter(|item| item.target_name == *type_name)
                 .count();
             let size: u64 = app
+                .prune
                 .items
                 .iter()
                 .filter(|item| item.target_name == *type_name)
@@ -89,11 +91,11 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             let entry_width = separator_width + text.len();
 
             // Reserve space for potential "... +N more"
-            let remaining_types = app.available_types.len() - i - 1;
+            let remaining_types = app.prune.available_types.len() - i - 1;
             let reserve = if remaining_types > 0 { 17 } else { 0 };
 
             if current_type_width + entry_width + reserve > available_for_types && i > 0 {
-                let remaining = app.available_types.len() - i;
+                let remaining = app.prune.available_types.len() - i;
                 type_spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
                 type_spans.push(Span::styled(
                     format!("... +{} more", remaining),
@@ -112,7 +114,7 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
         spans.extend(type_spans);
 
-        if types_shown > 0 || app.available_types.is_empty() {
+        if types_shown > 0 || app.prune.available_types.is_empty() {
             spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
         }
         spans.push(Span::styled(
@@ -122,12 +124,12 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 .add_modifier(Modifier::BOLD),
         ));
     } else {
-        let spinner = SPINNER_FRAMES[(app.scan_tick as usize) % SPINNER_FRAMES.len()];
+        let spinner = SPINNER_FRAMES[(app.prune.scan_tick as usize) % SPINNER_FRAMES.len()];
         spans.push(Span::styled(
-            format!("{} Scanning... {} dirs", spinner, app.dirs_scanned),
+            format!("{} Scanning... {} dirs", spinner, app.prune.dirs_scanned),
             Style::default().fg(Color::Yellow),
         ));
-        let found = app.items.len();
+        let found = app.prune.items.len();
         if found > 0 {
             spans.push(Span::styled(
                 format!(" | {} found", found),
@@ -143,7 +145,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let line1 = match app.mode {
         AppMode::Filter => Line::from(vec![
             Span::styled(" /", Style::default().fg(Color::Cyan)),
-            Span::raw(&app.filter_text),
+            Span::raw(&app.prune.filter_text),
             Span::styled("\u{2588}", Style::default().fg(Color::White)),
             Span::styled(
                 "  (Enter: apply, Esc: cancel)",
@@ -188,7 +190,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         Line::from(Span::styled(
             format!(
                 " {} total",
-                format_size(app.items.iter().map(|i| i.size).sum::<u64>())
+                format_size(app.prune.items.iter().map(|i| i.size).sum::<u64>())
             ),
             Style::default().fg(Color::DarkGray),
         ))

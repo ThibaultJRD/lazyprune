@@ -63,7 +63,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .map(format_duration)
         .unwrap_or_else(|| "unknown".to_string());
 
-    let tree_data = app.tree_cache.get(&item.path);
+    let tree_data = app.prune.tree_cache.get(&item.path);
 
     let project_label = tree_data
         .and_then(|d| d.project_type.as_deref())
@@ -133,8 +133,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         sep_area,
     );
 
-    if app.tree_loading {
-        let spinner = super::SPINNER_FRAMES[(app.scan_tick as usize) % super::SPINNER_FRAMES.len()];
+    if app.prune.tree_loading {
+        let spinner =
+            super::SPINNER_FRAMES[(app.prune.scan_tick as usize) % super::SPINNER_FRAMES.len()];
         let loading = Paragraph::new(Line::from(vec![
             Span::styled(
                 format!("  {} ", spinner),
@@ -146,7 +147,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let tree_data = match app.tree_cache.get(&item.path) {
+    let tree_data = match app.prune.tree_cache.get(&item.path) {
         Some(d) => d,
         None => {
             let hint = Paragraph::new(Line::styled(
@@ -161,7 +162,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let tree_lines = render_tree_lines(tree_data);
 
     // Apply scroll
-    let scroll = app.tree_scroll as usize;
+    let scroll = app.prune.tree_scroll as usize;
     let visible_height = tree_content_area.height as usize;
     let visible_lines: Vec<Line> = tree_lines
         .into_iter()
@@ -292,8 +293,9 @@ fn render_group_details(
         sep_area,
     );
 
-    if app.tree_loading {
-        let spinner = super::SPINNER_FRAMES[(app.scan_tick as usize) % super::SPINNER_FRAMES.len()];
+    if app.prune.tree_loading {
+        let spinner =
+            super::SPINNER_FRAMES[(app.prune.scan_tick as usize) % super::SPINNER_FRAMES.len()];
         let loading = Paragraph::new(Line::from(vec![
             Span::styled(
                 format!("  {} ", spinner),
@@ -305,7 +307,7 @@ fn render_group_details(
         return;
     }
 
-    let tree_data = match app.tree_cache.get(&group_info.path) {
+    let tree_data = match app.prune.tree_cache.get(&group_info.path) {
         Some(d) => d,
         None => {
             let hint = Paragraph::new(Line::styled(
@@ -319,7 +321,7 @@ fn render_group_details(
 
     let tree_lines = render_tree_lines(tree_data);
 
-    let scroll = app.tree_scroll as usize;
+    let scroll = app.prune.tree_scroll as usize;
     let visible_height = tree_content_area.height as usize;
     let visible_lines: Vec<Line> = tree_lines
         .into_iter()

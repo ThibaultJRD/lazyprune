@@ -87,8 +87,8 @@ pub fn render_confirm(frame: &mut Frame, app: &App) {
 }
 
 pub fn render_processing(frame: &mut Frame, app: &App) {
-    let progress = app.delete_progress;
-    let total = app.delete_total;
+    let progress = app.prune.delete_progress;
+    let total = app.prune.delete_total;
     let pct = if total > 0 {
         (progress as f64 / total as f64 * 100.0) as u16
     } else {
@@ -109,10 +109,10 @@ pub fn render_processing(frame: &mut Frame, app: &App) {
     let bar = format!("  {}{}", "█".repeat(filled), "░".repeat(empty));
 
     // Current file being deleted
-    let current = if app.delete_current_path.is_empty() {
+    let current = if app.prune.delete_current_path.is_empty() {
         String::new()
     } else {
-        let short = shorten_path(std::path::Path::new(&app.delete_current_path));
+        let short = shorten_path(std::path::Path::new(&app.prune.delete_current_path));
         format!("  {}", short)
     };
 
@@ -132,7 +132,7 @@ pub fn render_processing(frame: &mut Frame, app: &App) {
 }
 
 pub fn render_sub_filter(frame: &mut Frame, app: &App) {
-    let type_count = app.available_types.len();
+    let type_count = app.prune.available_types.len();
     // "All" + each type + blank line + instructions line
     let height = (type_count as u16) + 1 + 2 + 1; // +1 for "All", +2 borders, +1 instructions
 
@@ -143,12 +143,12 @@ pub fn render_sub_filter(frame: &mut Frame, app: &App) {
     let mut lines: Vec<Line> = Vec::new();
 
     // "All" option at cursor 0
-    let all_marker = if app.type_filter_cursor == 0 {
+    let all_marker = if app.prune.type_filter_cursor == 0 {
         "> "
     } else {
         "  "
     };
-    let all_style = if app.type_filter.is_none() {
+    let all_style = if app.prune.type_filter.is_none() {
         Style::default()
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD)
@@ -158,14 +158,14 @@ pub fn render_sub_filter(frame: &mut Frame, app: &App) {
     lines.push(Line::styled(format!("{}All", all_marker), all_style));
 
     // Each type
-    for (i, t) in app.available_types.iter().enumerate() {
+    for (i, t) in app.prune.available_types.iter().enumerate() {
         let cursor_idx = i + 1;
-        let marker = if app.type_filter_cursor == cursor_idx {
+        let marker = if app.prune.type_filter_cursor == cursor_idx {
             "> "
         } else {
             "  "
         };
-        let style = if app.type_filter.as_deref() == Some(t.as_str()) {
+        let style = if app.prune.type_filter.as_deref() == Some(t.as_str()) {
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD)
