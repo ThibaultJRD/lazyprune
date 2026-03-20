@@ -43,6 +43,7 @@ impl PortsSortMode {
 
 // ── Kill messages ─────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub enum KillMessage {
     Killing { port: u16, pid: u32, process: String },
     Killed { port: u16, pid: u32 },

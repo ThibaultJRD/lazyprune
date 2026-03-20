@@ -455,6 +455,7 @@ fn handle_ports_normal_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers
             KeyCode::Char('h') | KeyCode::Left | KeyCode::Esc => {
                 app.focus = app::FocusPanel::List;
             }
+            KeyCode::Char('q') => app.exit = true,
             KeyCode::Tab => {
                 let next = match app.active_tool {
                     Tool::Prune => Tool::Ports,
@@ -601,7 +602,7 @@ fn handle_ports_filter_key(app: &mut App, code: KeyCode) {
 
 fn handle_ports_sub_filter_key(app: &mut App, code: KeyCode) {
     match code {
-        KeyCode::Esc => {
+        KeyCode::Esc | KeyCode::Char('t') => {
             app.mode = AppMode::Normal;
         }
         KeyCode::Char('j') | KeyCode::Down => {
