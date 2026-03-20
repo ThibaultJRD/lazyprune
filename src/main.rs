@@ -116,6 +116,40 @@ fn main() -> io::Result<()> {
 
     // Handle --dry-run: accumulate results with stats, then print
     if cli.dry_run {
+        if cli.ports {
+            let dev_filter = if config.ports.dev_filter_enabled {
+                Some(config::parse_port_filter(&config.ports.dev_filter))
+            } else {
+                None
+            };
+            let (ptx, prx) = mpsc::channel();
+            ports::scan_ports(ptx, dev_filter);
+            let mut port_results: Vec<ports::PortInfo> = Vec::new();
+            while let Ok(msg) = prx.recv() {
+                match msg {
+                    ports::PortScanMessage::Found(info) => port_results.push(info),
+                    ports::PortScanMessage::Complete => break,
+                    ports::PortScanMessage::Error(e) => eprintln!("Error: {}", e),
+                }
+            }
+            port_results.sort_by_key(|p| p.port);
+            println!(
+                "{:<8} {:<6} {:<8} {:<16} STATE",
+                "PORT", "PROTO", "PID", "PROCESS"
+            );
+            for p in &port_results {
+                let proto = match p.protocol {
+                    ports::Protocol::Tcp => "TCP",
+                    ports::Protocol::Udp => "UDP",
+                };
+                println!(
+                    "{:<8} {:<6} {:<8} {:<16} {}",
+                    p.port, proto, p.pid, p.process_name, p.state
+                );
+            }
+            return Ok(());
+        }
+
         let mut results: Vec<scanner::ScanResult> = Vec::new();
         for msg in rx {
             match msg {
