@@ -395,6 +395,59 @@ pub fn render_killing(frame: &mut Frame, app: &App) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+pub fn render_protocol_filter(frame: &mut Frame, app: &App) {
+    let ports = match app.ports.as_ref() {
+        Some(p) => p,
+        None => return,
+    };
+
+    let options = ["All", "TCP", "UDP"];
+    let height: u16 = options.len() as u16 + 2 + 1; // options + borders + instructions
+    let width: u16 = 30;
+    let area = popup_area(frame.area(), width, height);
+    frame.render_widget(Clear, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    for (i, label) in options.iter().enumerate() {
+        let marker = if ports.protocol_filter_cursor == i {
+            "> "
+        } else {
+            "  "
+        };
+
+        let is_active = match i {
+            0 => ports.protocol_filter.is_none(),
+            1 => ports.protocol_filter == Some(crate::ports::Protocol::Tcp),
+            2 => ports.protocol_filter == Some(crate::ports::Protocol::Udp),
+            _ => false,
+        };
+
+        let style = if is_active {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        lines.push(Line::styled(format!("{}{}", marker, label), style));
+    }
+
+    lines.push(Line::styled(
+        "Enter: select  Esc: close",
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    let block = Block::default()
+        .title(" Filter by protocol ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, area);
+}
+
 fn help_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
     Line::from(vec![
         Span::styled(format!("  {:14}", key), Style::default().fg(Color::Cyan)),

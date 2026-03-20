@@ -21,15 +21,34 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let layout = layout::build(frame.area());
 
     render_header(frame, app, layout.header);
-    list::render(frame, app, layout.list);
-    details::render(frame, app, layout.details);
+
+    match app.active_tool {
+        Tool::Prune => {
+            list::render(frame, app, layout.list);
+            details::render(frame, app, layout.details);
+        }
+        Tool::Ports => {
+            ports_list::render(frame, layout.list, app);
+            ports_details::render(frame, layout.details, app);
+        }
+    }
+
     render_footer(frame, app, layout.footer);
 
     // Overlays
     match app.mode {
-        AppMode::Confirm => popup::render_confirm(frame, app),
-        AppMode::Processing => popup::render_processing(frame, app),
-        AppMode::SubFilter => popup::render_sub_filter(frame, app),
+        AppMode::Confirm => match app.active_tool {
+            Tool::Prune => popup::render_confirm(frame, app),
+            Tool::Ports => popup::render_kill_confirm(frame, app),
+        },
+        AppMode::Processing => match app.active_tool {
+            Tool::Prune => popup::render_processing(frame, app),
+            Tool::Ports => popup::render_killing(frame, app),
+        },
+        AppMode::SubFilter => match app.active_tool {
+            Tool::Prune => popup::render_sub_filter(frame, app),
+            Tool::Ports => popup::render_protocol_filter(frame, app),
+        },
         AppMode::Help => popup::render_help(frame, app),
         _ => {}
     }
