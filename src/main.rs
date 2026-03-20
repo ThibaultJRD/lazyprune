@@ -49,7 +49,7 @@ struct Cli {
     dir: Option<Vec<String>>,
 
     /// Start in ports mode (list and kill processes by port)
-    #[arg(long)]
+    #[arg(short = 'p', long)]
     ports: bool,
 }
 

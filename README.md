@@ -29,7 +29,7 @@ cargo install --path .
 
 ```bash
 lazyprune                            # Start in prune mode (default)
-lazyprune --ports                    # Start in ports mode
+lazyprune -p / --ports               # Start in ports mode
 lazyprune ~/Develop                  # Scan a specific directory
 lazyprune -t / --target node_modules # Only look for node_modules
 lazyprune -d / --dry-run             # Print results to stdout, no TUI
