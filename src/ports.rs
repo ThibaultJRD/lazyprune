@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 
+use nix::sys::signal::{self, Signal};
+use nix::unistd::Pid;
 use ratatui::widgets::ListState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -295,6 +297,138 @@ impl PortsState {
             .collect()
     }
 
+    // ── Kill support ──────────────────────────────────────────────────────────
+
+    /// Spawn a kill thread for all selected items.
+    pub fn start_killing(&mut self) {
+        let targets: Vec<PortInfo> = self
+            .selected
+            .iter()
+            .enumerate()
+            .filter(|(_, &sel)| sel)
+            .map(|(i, _)| self.items[i].clone())
+            .collect();
+
+        if targets.is_empty() {
+            return;
+        }
+
+        self.kill_total = targets.len();
+        self.kill_progress = 0;
+        self.kill_errors.clear();
+
+        let (tx, rx) = mpsc::channel();
+        self.kill_rx = Some(rx);
+        std::thread::spawn(move || kill_ports(targets, tx));
+    }
+
+    /// Drain the kill channel. Returns `true` when kill is complete.
+    pub fn poll_kill_results(&mut self) -> bool {
+        let rx = match self.kill_rx.as_ref() {
+            Some(rx) => rx,
+            None => return false,
+        };
+
+        loop {
+            match rx.try_recv() {
+                Ok(msg) => match msg {
+                    KillMessage::Killing { process, .. } => {
+                        self.kill_current = process;
+                    }
+                    KillMessage::Killed { .. } => {
+                        self.kill_progress += 1;
+                    }
+                    KillMessage::Error { error, .. } => {
+                        self.kill_progress += 1;
+                        self.kill_errors.push(error);
+                    }
+                    KillMessage::Complete => {
+                        self.kill_rx = None;
+                        // Trigger a rescan to reflect the killed processes
+                        let filter = if self.dev_filter_active {
+                            Some(self.dev_filter_ports.clone())
+                        } else {
+                            None
+                        };
+                        self.start_scan(filter);
+                        return true;
+                    }
+                },
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.kill_rx = None;
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+}
+
+// ── Kill logic ────────────────────────────────────────────────────────────────
+
+/// Verify that `pid` still refers to `expected_name` by consulting `ps`.
+fn verify_process(pid: u32, expected_name: &str) -> bool {
+    let output = match std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "comm="])
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return false,
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let actual = stdout.trim();
+    // ps may truncate the command name, so check if either string contains the other
+    !actual.is_empty()
+        && (actual.contains(expected_name) || expected_name.contains(actual))
+}
+
+/// Kill each target process with SIGTERM, wait 500 ms, then SIGKILL if still alive.
+pub fn kill_ports(targets: Vec<PortInfo>, tx: mpsc::Sender<KillMessage>) {
+    for target in &targets {
+        let _ = tx.send(KillMessage::Killing {
+            port: target.port,
+            pid: target.pid,
+            process: target.process_name.clone(),
+        });
+
+        let nix_pid = Pid::from_raw(target.pid as i32);
+
+        // Send SIGTERM
+        if let Err(e) = signal::kill(nix_pid, Signal::SIGTERM) {
+            let _ = tx.send(KillMessage::Error {
+                port: target.port,
+                pid: target.pid,
+                error: format!("SIGTERM failed: {e}"),
+            });
+            continue;
+        }
+
+        // Wait 500 ms for graceful shutdown
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        // Check if still alive
+        let still_alive = signal::kill(nix_pid, None).is_ok();
+        if still_alive && verify_process(target.pid, &target.process_name) {
+            // Process is still alive and is indeed the expected process — use SIGKILL
+            if let Err(e) = signal::kill(nix_pid, Signal::SIGKILL) {
+                let _ = tx.send(KillMessage::Error {
+                    port: target.port,
+                    pid: target.pid,
+                    error: format!("SIGKILL failed: {e}"),
+                });
+                continue;
+            }
+        }
+
+        let _ = tx.send(KillMessage::Killed {
+            port: target.port,
+            pid: target.pid,
+        });
+    }
+
+    let _ = tx.send(KillMessage::Complete);
 }
 
 /// Internal struct used during lsof parsing, before deduplication.
@@ -687,4 +821,21 @@ mod tests {
         assert_eq!(state.selected_count(), 1);
     }
 
+    // ── Kill tests ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_kill_message_types() {
+        let msg = KillMessage::Killing {
+            port: 3000,
+            pid: 123,
+            process: "node".into(),
+        };
+        match msg {
+            KillMessage::Killing { port, pid, .. } => {
+                assert_eq!(port, 3000);
+                assert_eq!(pid, 123);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
 }
