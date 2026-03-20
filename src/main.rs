@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod ports;
 mod scanner;
 mod targets;
 mod ui;
