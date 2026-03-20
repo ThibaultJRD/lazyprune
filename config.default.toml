@@ -64,3 +64,10 @@ indicator = "Cargo.toml"
 name = "dist"
 dirs = ["dist"]
 indicator = "package.json"
+
+# --- Ports mode ---
+[ports]
+# Only show ports matching these ranges on startup (toggle with 'a' in TUI)
+dev_filter_enabled = true
+# Port ranges to show when dev filter is active (supports "PORT" and "START-END")
+dev_filter = ["3000-3009", "4000-4009", "5173-5174", "8080-8090"]
