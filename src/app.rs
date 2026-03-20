@@ -60,6 +60,12 @@ pub enum AppMode {
     Help,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tool {
+    Prune,
+    Ports,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FocusPanel {
     List,
@@ -123,6 +129,7 @@ pub struct PruneState {
 }
 
 pub struct App {
+    pub active_tool: Tool,
     pub prune: PruneState,
     pub mode: AppMode,
     pub focus: FocusPanel,
@@ -170,6 +177,7 @@ impl App {
                 tree_requested_path: None,
                 path_index_map: std::collections::HashMap::new(),
             },
+            active_tool: Tool::Prune,
             mode: AppMode::Normal,
             focus: FocusPanel::List,
             exit: false,

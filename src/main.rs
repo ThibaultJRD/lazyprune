@@ -4,7 +4,7 @@ mod scanner;
 mod targets;
 mod ui;
 
-use app::{App, AppMode};
+use app::{App, AppMode, Tool};
 use clap::Parser;
 use config::Config;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -46,6 +46,10 @@ struct Cli {
     /// Scan for any directory with this name (ad-hoc, no config needed)
     #[arg(short = 'D', long, conflicts_with = "target")]
     dir: Option<Vec<String>>,
+
+    /// Start in ports mode (list and kill processes by port)
+    #[arg(long)]
+    ports: bool,
 }
 
 fn main() -> io::Result<()> {
@@ -133,6 +137,9 @@ fn main() -> io::Result<()> {
 
     let mut terminal = ratatui::init();
     let mut app = App::new(rx, config);
+    if cli.ports {
+        app.active_tool = Tool::Ports;
+    }
     let result = run(&mut terminal, &mut app);
     ratatui::restore();
 
@@ -223,6 +230,24 @@ fn handle_normal_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
             if app.selected_count() > 0 {
                 app.mode = AppMode::Confirm;
             }
+        }
+        KeyCode::Tab => {
+            app.active_tool = match app.active_tool {
+                Tool::Prune => Tool::Ports,
+                Tool::Ports => Tool::Prune,
+            };
+            app.mode = AppMode::Normal;
+            app.focus = app::FocusPanel::List;
+        }
+        KeyCode::Char('1') => {
+            app.active_tool = Tool::Prune;
+            app.mode = AppMode::Normal;
+            app.focus = app::FocusPanel::List;
+        }
+        KeyCode::Char('2') => {
+            app.active_tool = Tool::Ports;
+            app.mode = AppMode::Normal;
+            app.focus = app::FocusPanel::List;
         }
         KeyCode::Char('?') => app.mode = AppMode::Help,
         KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
