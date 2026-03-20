@@ -1,4 +1,4 @@
-use crate::app::App;
+use crate::app::{App, Tool};
 use crate::format_size;
 use ratatui::{
     layout::{Constraint, Flex, Layout, Rect},
@@ -189,31 +189,67 @@ pub fn render_sub_filter(frame: &mut Frame, app: &App) {
     frame.render_widget(paragraph, area);
 }
 
-pub fn render_help(frame: &mut Frame) {
+pub fn render_help(frame: &mut Frame, app: &App) {
+    let lines = if app.active_tool == Tool::Ports {
+        let width: u16 = 50;
+        let height: u16 = 18;
+        let area = popup_area(frame.area(), width, height);
+        frame.render_widget(Clear, area);
+
+        let lines = vec![
+            Line::raw(""),
+            help_line("j/k \u{2191}/\u{2193}", "Navigate"),
+            help_line("g/G", "Jump top/bottom"),
+            help_line("Space", "Toggle selection"),
+            help_line("v", "Invert selection"),
+            help_line("Ctrl+a", "Select all"),
+            help_line("d", "Kill selected"),
+            help_line("/", "Filter by port/process"),
+            help_line("s", "Cycle sort"),
+            help_line("t", "Filter by protocol"),
+            help_line("a", "Toggle dev filter"),
+            help_line("r", "Refresh port list"),
+            help_line("Tab", "Switch to Prune mode"),
+            help_line("?", "Toggle help"),
+            help_line("q", "Quit"),
+            Line::raw(""),
+        ];
+
+        let block = Block::default()
+            .title(" Help — Ports ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan));
+
+        let paragraph = Paragraph::new(lines).block(block);
+        frame.render_widget(paragraph, area);
+        return;
+    } else {
+        vec![
+            Line::raw(""),
+            help_line("j/k \u{2191}/\u{2193}", "Navigate"),
+            help_line("g/G", "Jump top/bottom"),
+            help_line("Space", "Toggle selection"),
+            help_line("v", "Invert selection"),
+            help_line("Ctrl+a", "Select all"),
+            help_line("d", "Delete selected"),
+            help_line("/", "Filter by path"),
+            help_line("s", "Cycle sort (size/name/date)"),
+            help_line("p", "Toggle project grouping"),
+            help_line("t", "Filter by type"),
+            help_line("l/\u{2192}/Enter", "Open details panel"),
+            help_line("h/\u{2190}/Esc", "Back to list"),
+            help_line("y", "Copy path (in details)"),
+            help_line("Tab", "Switch to Ports mode"),
+            help_line("?", "Toggle help"),
+            help_line("q", "Quit"),
+            Line::raw(""),
+        ]
+    };
+
     let width: u16 = 50;
-    let height: u16 = 21;
+    let height: u16 = lines.len() as u16 + 2;
     let area = popup_area(frame.area(), width, height);
     frame.render_widget(Clear, area);
-
-    let lines = vec![
-        Line::raw(""),
-        help_line("j/k \u{2191}/\u{2193}", "Navigate"),
-        help_line("g/G", "Jump top/bottom"),
-        help_line("Space", "Toggle selection"),
-        help_line("v", "Invert selection"),
-        help_line("Ctrl+a", "Select all"),
-        help_line("d", "Delete selected"),
-        help_line("/", "Filter by path"),
-        help_line("s", "Cycle sort (size/name/date)"),
-        help_line("p", "Toggle project grouping"),
-        help_line("t", "Filter by type"),
-        help_line("l/\u{2192}/Enter", "Open details panel"),
-        help_line("h/\u{2190}/Esc", "Back to list"),
-        help_line("y", "Copy path (in details)"),
-        help_line("?", "Toggle help"),
-        help_line("q", "Quit"),
-        Line::raw(""),
-    ];
 
     let block = Block::default()
         .title(" Help ")
@@ -222,6 +258,141 @@ pub fn render_help(frame: &mut Frame) {
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
+}
+
+pub fn render_kill_confirm(frame: &mut Frame, app: &App) {
+    let ports = match app.ports.as_ref() {
+        Some(p) => p,
+        None => return,
+    };
+
+    let selected = ports.selected_items();
+    let count = selected.len();
+
+    let max_show = 15;
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::raw(""));
+
+    for (i, item) in selected.iter().enumerate() {
+        if i >= max_show {
+            lines.push(Line::styled(
+                format!("  ... and {} more", count - max_show),
+                Style::default().fg(Color::DarkGray),
+            ));
+            break;
+        }
+
+        // Warn if owned by another user
+        let current_user = std::env::var("USER").unwrap_or_default();
+        let warn = if !current_user.is_empty() && item.user != current_user {
+            " ⚠ "
+        } else {
+            "   "
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(warn, Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!(":{}", item.port),
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw("  "),
+            Span::styled(&item.process_name, Style::default().fg(Color::White)),
+            Span::styled(
+                format!("  ({})", item.user),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        Span::styled("  [Enter]", Style::default().fg(Color::Yellow)),
+        Span::raw(" Confirm  "),
+        Span::styled("[Esc]", Style::default().fg(Color::Yellow)),
+        Span::raw(" Cancel"),
+    ]));
+
+    let title = format!(" Kill {count} process{}? ", if count == 1 { "" } else { "es" });
+
+    let max_line_len = lines
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.len()).sum::<usize>())
+        .max()
+        .unwrap_or(0) as u16;
+    let title_len = title.len() as u16 + 4;
+    let terminal_width = frame.area().width;
+    let width = max_line_len
+        .max(title_len)
+        .clamp(45, terminal_width.saturating_sub(10));
+    let height = lines.len() as u16 + 2;
+
+    let area = popup_area(frame.area(), width, height);
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Red));
+
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, area);
+}
+
+pub fn render_killing(frame: &mut Frame, app: &App) {
+    let ports = match app.ports.as_ref() {
+        Some(p) => p,
+        None => return,
+    };
+
+    let progress = ports.kill_progress;
+    let total = ports.kill_total;
+    let pct = if total > 0 {
+        (progress as f64 / total as f64 * 100.0) as u16
+    } else {
+        0
+    };
+
+    let width: u16 = 50;
+    let height: u16 = 7;
+    let area = popup_area(frame.area(), width, height);
+    frame.render_widget(Clear, area);
+
+    let title = format!(" Killing... {}/{} ({pct}%) ", progress, total);
+
+    // Progress bar
+    let bar_width = (width - 6) as usize;
+    let filled = (bar_width as f64 * progress as f64 / total.max(1) as f64) as usize;
+    let empty = bar_width - filled;
+    let bar = format!("  {}{}", "\u{2588}".repeat(filled), "\u{2591}".repeat(empty));
+
+    let current = if ports.kill_current.is_empty() {
+        String::new()
+    } else {
+        format!("  {}", ports.kill_current)
+    };
+
+    let mut lines = vec![
+        Line::from(""),
+        Line::styled(bar, Style::default().fg(Color::Red)),
+        Line::from(""),
+        Line::styled(current, Style::default().fg(Color::DarkGray)),
+    ];
+
+    // Show first error if any
+    if let Some(err) = ports.kill_errors.first() {
+        lines.push(Line::styled(
+            format!("  Error: {err}"),
+            Style::default().fg(Color::Red),
+        ));
+    }
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Red));
+
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 fn help_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {

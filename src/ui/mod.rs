@@ -2,10 +2,12 @@ pub mod details;
 pub mod layout;
 pub mod list;
 pub mod popup;
+pub mod ports_details;
+pub mod ports_list;
 
 pub const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-use crate::app::{App, AppMode};
+use crate::app::{App, AppMode, Tool};
 use crate::format_size;
 use ratatui::{
     layout::{Constraint, Layout},
@@ -28,7 +30,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         AppMode::Confirm => popup::render_confirm(frame, app),
         AppMode::Processing => popup::render_processing(frame, app),
         AppMode::SubFilter => popup::render_sub_filter(frame, app),
-        AppMode::Help => popup::render_help(frame),
+        AppMode::Help => popup::render_help(frame, app),
         _ => {}
     }
 }
@@ -36,19 +38,92 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let max_width = area.width as usize;
 
+    // Mode indicator at the left
+    let mut spans: Vec<Span> = match app.active_tool {
+        Tool::Prune => vec![
+            Span::styled(
+                " [Prune]",
+                Style::default().bg(Color::Cyan).fg(Color::Black),
+            ),
+            Span::raw(" "),
+            Span::styled("Ports", Style::default().fg(Color::DarkGray)),
+            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
+        ],
+        Tool::Ports => vec![
+            Span::raw(" "),
+            Span::styled("Prune", Style::default().fg(Color::DarkGray)),
+            Span::raw(" "),
+            Span::styled(
+                "[Ports]",
+                Style::default().bg(Color::Cyan).fg(Color::Black),
+            ),
+            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
+        ],
+    };
+
+    if app.active_tool == Tool::Ports {
+        // Ports-specific header content
+        if let Some(ports) = &app.ports {
+            let port_count = ports.filtered_indices.len();
+            let sort_label = ports.sort_mode.label();
+            let dev_filter_str = if ports.dev_filter_active { "ON" } else { "OFF" };
+            spans.push(Span::styled(
+                format!("{port_count} ports"),
+                Style::default().fg(Color::White),
+            ));
+            spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled("Sort: ", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(sort_label, Style::default().fg(Color::Cyan)));
+            spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(
+                "Dev filter: ",
+                Style::default().fg(Color::DarkGray),
+            ));
+            spans.push(Span::styled(
+                dev_filter_str,
+                if ports.dev_filter_active {
+                    Style::default().fg(Color::Green)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                },
+            ));
+
+            if !ports.scan_complete {
+                let spinner =
+                    SPINNER_FRAMES[(app.prune.scan_tick as usize) % SPINNER_FRAMES.len()];
+                spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+                spans.push(Span::styled(
+                    format!("{spinner} Scanning..."),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+        } else {
+            spans.push(Span::styled(
+                "Ports not initialized",
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+
+        frame.render_widget(
+            ratatui::widgets::Paragraph::new(Line::from(spans)),
+            area,
+        );
+        return;
+    }
+
     let type_label = match &app.prune.type_filter {
         Some(t) => t.as_str(),
         None => "All",
     };
 
-    let mut spans = vec![
-        Span::styled(" [Targets: ", Style::default().fg(Color::DarkGray)),
+    spans.extend(vec![
+        Span::styled("[Targets: ", Style::default().fg(Color::DarkGray)),
         Span::styled(type_label, Style::default().fg(Color::Cyan)),
         Span::styled("] ", Style::default().fg(Color::DarkGray)),
         Span::styled("[Sort: ", Style::default().fg(Color::DarkGray)),
         Span::styled(app.prune.sort_mode.label(), Style::default().fg(Color::Cyan)),
         Span::styled("]  ", Style::default().fg(Color::DarkGray)),
-    ];
+    ]);
 
     if app.prune.project_grouping {
         spans.push(Span::styled(
@@ -142,6 +217,70 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 }
 
 fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let [line1_area, line2_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(area);
+
+    if app.active_tool == Tool::Ports {
+        let line1 = match app.mode {
+            AppMode::Filter => Line::from(vec![
+                Span::styled(" /", Style::default().fg(Color::Cyan)),
+                Span::raw(
+                    app.ports
+                        .as_ref()
+                        .map(|p| p.filter_text.as_str())
+                        .unwrap_or(""),
+                ),
+                Span::styled("\u{2588}", Style::default().fg(Color::White)),
+                Span::styled(
+                    "  (Enter: apply, Esc: cancel)",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]),
+            _ => Line::from(vec![
+                Span::styled(" Tab", Style::default().fg(Color::Cyan)),
+                Span::styled(":toggle  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("/", Style::default().fg(Color::Cyan)),
+                Span::styled(":filter  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("s", Style::default().fg(Color::Cyan)),
+                Span::styled(":sort  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("t", Style::default().fg(Color::Cyan)),
+                Span::styled(":proto  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("a", Style::default().fg(Color::Cyan)),
+                Span::styled(":dev filter  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("d", Style::default().fg(Color::Cyan)),
+                Span::styled(":kill  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("r", Style::default().fg(Color::Cyan)),
+                Span::styled(":refresh  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("?", Style::default().fg(Color::Cyan)),
+                Span::styled(":help", Style::default().fg(Color::DarkGray)),
+            ]),
+        };
+
+        let line2 = if let Some(ports) = &app.ports {
+            let selected = ports.selected_count();
+            if selected > 0 {
+                Line::from(vec![Span::styled(
+                    format!(" Selected: {selected} ports"),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )])
+            } else {
+                Line::from(Span::styled(
+                    format!(" {} total", ports.filtered_indices.len()),
+                    Style::default().fg(Color::DarkGray),
+                ))
+            }
+        } else {
+            Line::from(Span::styled("", Style::default()))
+        };
+
+        frame.render_widget(Paragraph::new(line1), line1_area);
+        frame.render_widget(Paragraph::new(line2), line2_area);
+        return;
+    }
+
+    // Prune footer (original behavior)
     let line1 = match app.mode {
         AppMode::Filter => Line::from(vec![
             Span::styled(" /", Style::default().fg(Color::Cyan)),
@@ -195,9 +334,6 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Style::default().fg(Color::DarkGray),
         ))
     };
-
-    let [line1_area, line2_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(area);
 
     frame.render_widget(Paragraph::new(line1), line1_area);
     frame.render_widget(Paragraph::new(line2), line2_area);
