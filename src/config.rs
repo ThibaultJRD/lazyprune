@@ -1,6 +1,27 @@
 use crate::targets::Target;
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct PortsConfig {
+    pub dev_filter_enabled: bool,
+    pub dev_filter: Vec<String>,
+}
+
+impl Default for PortsConfig {
+    fn default() -> Self {
+        Self {
+            dev_filter_enabled: true,
+            dev_filter: vec![
+                "3000-3009".into(),
+                "4000-4009".into(),
+                "5173-5174".into(),
+                "8080-8090".into(),
+            ],
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -10,6 +31,25 @@ pub struct Config {
     pub skip: Vec<String>,
     #[serde(default)]
     pub targets: Vec<Target>,
+    #[serde(default)]
+    pub ports: PortsConfig,
+}
+
+/// Expand a list of port range strings (e.g. "3000-3009", "5173") into a set of u16 port numbers.
+pub fn parse_port_filter(ranges: &[String]) -> HashSet<u16> {
+    let mut ports = HashSet::new();
+    for entry in ranges {
+        if let Some((start, end)) = entry.split_once('-') {
+            if let (Ok(s), Ok(e)) = (start.parse::<u16>(), end.parse::<u16>()) {
+                for p in s..=e {
+                    ports.insert(p);
+                }
+            }
+        } else if let Ok(p) = entry.parse::<u16>() {
+            ports.insert(p);
+        }
+    }
+    ports
 }
 
 fn default_root() -> String {
@@ -65,6 +105,14 @@ struct UserConfigOverride {
     root: Option<String>,
     skip: Option<Vec<String>>,
     targets: Option<Vec<Target>>,
+    #[serde(default)]
+    ports: Option<UserPortsOverride>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UserPortsOverride {
+    dev_filter_enabled: Option<bool>,
+    dev_filter: Option<Vec<String>>,
 }
 
 impl UserConfigOverride {
@@ -77,6 +125,14 @@ impl UserConfigOverride {
         }
         if let Some(targets) = self.targets {
             config.targets = targets;
+        }
+        if let Some(ref ports) = self.ports {
+            if let Some(enabled) = ports.dev_filter_enabled {
+                config.ports.dev_filter_enabled = enabled;
+            }
+            if let Some(ref filter) = ports.dev_filter {
+                config.ports.dev_filter = filter.clone();
+            }
         }
     }
 }
@@ -125,5 +181,36 @@ mod tests {
         let path = config.root_path();
         assert!(!path.to_string_lossy().contains('~'));
         assert!(path.is_absolute());
+    }
+
+    #[test]
+    fn test_ports_config_defaults() {
+        let config = Config::load(None).unwrap();
+        assert!(config.ports.dev_filter_enabled);
+        assert!(!config.ports.dev_filter.is_empty());
+    }
+
+    #[test]
+    fn test_ports_config_parse_range() {
+        let ranges = parse_port_filter(&["3000-3009".to_string(), "5173".to_string()]);
+        assert!(ranges.contains(&3000));
+        assert!(ranges.contains(&3009));
+        assert!(ranges.contains(&5173));
+        assert!(!ranges.contains(&3010));
+    }
+
+    #[test]
+    fn test_ports_config_user_override_partial() {
+        // User overrides only dev_filter, dev_filter_enabled keeps default
+        let default = Config::load(None).unwrap();
+        let toml_str = r#"
+[ports]
+dev_filter = ["8080"]
+"#;
+        let user: UserConfigOverride = toml::from_str(toml_str).unwrap();
+        let mut config = default;
+        user.apply_to(&mut config);
+        assert!(config.ports.dev_filter_enabled); // kept default
+        assert_eq!(config.ports.dev_filter, vec!["8080"]);
     }
 }

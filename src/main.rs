@@ -1,10 +1,11 @@
 mod app;
 mod config;
+mod ports;
 mod scanner;
 mod targets;
 mod ui;
 
-use app::{App, AppMode};
+use app::{App, AppMode, Tool};
 use clap::Parser;
 use config::Config;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -46,6 +47,10 @@ struct Cli {
     /// Scan for any directory with this name (ad-hoc, no config needed)
     #[arg(short = 'D', long, conflicts_with = "target")]
     dir: Option<Vec<String>>,
+
+    /// Start in ports mode (list and kill processes by port)
+    #[arg(short = 'p', long)]
+    ports: bool,
 }
 
 fn main() -> io::Result<()> {
@@ -111,6 +116,40 @@ fn main() -> io::Result<()> {
 
     // Handle --dry-run: accumulate results with stats, then print
     if cli.dry_run {
+        if cli.ports {
+            let dev_filter = if config.ports.dev_filter_enabled {
+                Some(config::parse_port_filter(&config.ports.dev_filter))
+            } else {
+                None
+            };
+            let (ptx, prx) = mpsc::channel();
+            ports::scan_ports(ptx, dev_filter);
+            let mut port_results: Vec<ports::PortInfo> = Vec::new();
+            while let Ok(msg) = prx.recv() {
+                match msg {
+                    ports::PortScanMessage::Found(info) => port_results.push(info),
+                    ports::PortScanMessage::Complete => break,
+                    ports::PortScanMessage::Error(e) => eprintln!("Error: {}", e),
+                }
+            }
+            port_results.sort_by_key(|p| p.port);
+            println!(
+                "{:<8} {:<6} {:<8} {:<16} STATE",
+                "PORT", "PROTO", "PID", "PROCESS"
+            );
+            for p in &port_results {
+                let proto = match p.protocol {
+                    ports::Protocol::Tcp => "TCP",
+                    ports::Protocol::Udp => "UDP",
+                };
+                println!(
+                    "{:<8} {:<6} {:<8} {:<16} {}",
+                    p.port, proto, p.pid, p.process_name, p.state
+                );
+            }
+            return Ok(());
+        }
+
         let mut results: Vec<scanner::ScanResult> = Vec::new();
         for msg in rx {
             match msg {
@@ -132,15 +171,19 @@ fn main() -> io::Result<()> {
     }
 
     let mut terminal = ratatui::init();
-    let mut app = App::new(rx);
+    let mut app = App::new(rx, config);
+    if cli.ports {
+        app.active_tool = Tool::Ports;
+        app.ensure_ports_initialized();
+    }
     let result = run(&mut terminal, &mut app);
     ratatui::restore();
 
-    if app.items_deleted > 0 {
+    if app.prune.items_deleted > 0 {
         println!(
             "lazyprune: deleted {} items, freed {}",
-            app.items_deleted,
-            format_size(app.total_deleted),
+            app.prune.items_deleted,
+            format_size(app.prune.total_deleted),
         );
     }
 
@@ -149,25 +192,56 @@ fn main() -> io::Result<()> {
 
 fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
     while !app.exit {
-        if app.mode == AppMode::Deleting {
-            app.poll_delete_results();
-            terminal.draw(|frame| render(frame, app))?;
-            if event::poll(Duration::from_millis(50))? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == crossterm::event::KeyEventKind::Press {
-                        // Consume keys during deletion
+        match app.active_tool {
+            Tool::Prune => {
+                if app.mode == AppMode::Processing {
+                    app.poll_delete_results();
+                    terminal.draw(|frame| render(frame, app))?;
+                    if event::poll(Duration::from_millis(50))? {
+                        if let Event::Key(key) = event::read()? {
+                            if key.kind == crossterm::event::KeyEventKind::Press {
+                                // Consume keys during deletion
+                                let _ = key;
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                app.poll_scan_results();
+                app.poll_tree_results();
+                app.maybe_start_tree_scan();
+
+                if !app.prune.scan_complete || app.prune.tree_loading {
+                    app.prune.scan_tick = app.prune.scan_tick.wrapping_add(1);
+                }
+            }
+            Tool::Ports => {
+                if app.mode == AppMode::Processing {
+                    if let Some(ref mut ports) = app.ports {
+                        let done = ports.poll_kill_results();
+                        terminal.draw(|frame| render(frame, app))?;
+                        if event::poll(Duration::from_millis(50))? {
+                            if let Event::Key(key) = event::read()? {
+                                if key.kind == crossterm::event::KeyEventKind::Press {
+                                    let _ = key;
+                                }
+                            }
+                        }
+                        if done {
+                            app.mode = AppMode::Normal;
+                        }
+                    }
+                    continue;
+                }
+
+                if let Some(ref mut ports) = app.ports {
+                    ports.poll_scan_results();
+                    if !ports.scan_complete {
+                        ports.scan_tick = ports.scan_tick.wrapping_add(1);
                     }
                 }
             }
-            continue;
-        }
-
-        app.poll_scan_results();
-        app.poll_tree_results();
-        app.maybe_start_tree_scan();
-
-        if !app.scan_complete || app.tree_loading {
-            app.scan_tick = app.scan_tick.wrapping_add(1);
         }
 
         terminal.draw(|frame| render(frame, app))?;
@@ -184,29 +258,64 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) {
-    match app.mode {
-        AppMode::Normal => {
-            if app.focus == app::FocusPanel::Details {
-                handle_details_key(app, key.code);
-            } else {
-                handle_normal_key(app, key.code, key.modifiers);
-            }
-        }
-        AppMode::Filter => handle_filter_key(app, key.code),
-        AppMode::TypeFilter => handle_type_filter_key(app, key.code),
-        AppMode::Confirm => handle_confirm_key(app, key.code),
-        AppMode::Help => handle_help_key(app, key.code),
-        AppMode::Deleting => {} // No input during deletion
+    match app.active_tool {
+        Tool::Prune => handle_prune_key(app, key),
+        Tool::Ports => handle_ports_key(app, key),
     }
 }
 
-fn handle_normal_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+// ── Prune key handlers ──────────────────────────────────────────────────────
+
+fn handle_prune_key(app: &mut App, key: KeyEvent) {
+    match app.mode {
+        AppMode::Normal => {
+            if app.focus == app::FocusPanel::Details {
+                handle_prune_details_key(app, key.code);
+            } else {
+                handle_prune_normal_key(app, key.code, key.modifiers);
+            }
+        }
+        AppMode::Filter => handle_prune_filter_key(app, key.code),
+        AppMode::SubFilter => handle_prune_sub_filter_key(app, key.code),
+        AppMode::Confirm => handle_prune_confirm_key(app, key.code),
+        AppMode::Help => handle_prune_help_key(app, key.code),
+        AppMode::Processing => {}
+    }
+}
+
+fn switch_tool(app: &mut App, tool: Tool) {
+    // Clear any active filter on the tool we're leaving
+    match app.active_tool {
+        Tool::Prune => {
+            if !app.prune.filter_text.is_empty() {
+                app.prune.filter_text.clear();
+                app.apply_filter();
+            }
+        }
+        Tool::Ports => {
+            if let Some(ref mut ports) = app.ports {
+                if !ports.filter_text.is_empty() {
+                    ports.filter_text.clear();
+                    ports.apply_filter();
+                }
+            }
+        }
+    }
+    app.active_tool = tool;
+    app.mode = AppMode::Normal;
+    app.focus = app::FocusPanel::List;
+    if tool == Tool::Ports {
+        app.ensure_ports_initialized();
+    }
+}
+
+fn handle_prune_normal_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
     match code {
         KeyCode::Char('q') | KeyCode::Esc => app.exit = true,
         KeyCode::Char('j') | KeyCode::Down => app.next(),
         KeyCode::Char('k') | KeyCode::Up => app.previous(),
-        KeyCode::Char('g') => app.go_top(),
-        KeyCode::Char('G') => app.go_bottom(),
+        KeyCode::Char('g') | KeyCode::Home => app.go_top(),
+        KeyCode::Char('G') | KeyCode::End => app.go_bottom(),
         KeyCode::Char(' ') => app.toggle_selection(),
         KeyCode::Char('v') => app.invert_selection(),
         KeyCode::Char('a') if modifiers.contains(KeyModifiers::CONTROL) => app.select_all(),
@@ -214,9 +323,9 @@ fn handle_normal_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('p') => app.toggle_project_grouping(),
         KeyCode::Char('/') => app.mode = AppMode::Filter,
         KeyCode::Char('t') => {
-            if !app.available_types.is_empty() {
-                app.type_filter_cursor = 0;
-                app.mode = AppMode::TypeFilter;
+            if !app.prune.available_types.is_empty() {
+                app.prune.type_filter_cursor = 0;
+                app.mode = AppMode::SubFilter;
             }
         }
         KeyCode::Char('d') => {
@@ -224,6 +333,15 @@ fn handle_normal_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
                 app.mode = AppMode::Confirm;
             }
         }
+        KeyCode::Tab => {
+            let next = match app.active_tool {
+                Tool::Prune => Tool::Ports,
+                Tool::Ports => Tool::Prune,
+            };
+            switch_tool(app, next);
+        }
+        KeyCode::Char('1') => switch_tool(app, Tool::Prune),
+        KeyCode::Char('2') => switch_tool(app, Tool::Ports),
         KeyCode::Char('?') => app.mode = AppMode::Help,
         KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
             if app.current_item().is_some() {
@@ -238,7 +356,7 @@ fn handle_normal_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
     }
 }
 
-fn handle_details_key(app: &mut App, code: KeyCode) {
+fn handle_prune_details_key(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Char('q') => app.exit = true,
         KeyCode::Char('h') | KeyCode::Left | KeyCode::Esc => {
@@ -249,14 +367,23 @@ fn handle_details_key(app: &mut App, code: KeyCode) {
         KeyCode::Char('g') => app.tree_scroll_top(),
         KeyCode::Char('G') => app.tree_scroll_bottom(20),
         KeyCode::Char('y') => app.copy_path_to_clipboard(),
+        KeyCode::Tab => {
+            let next = match app.active_tool {
+                Tool::Prune => Tool::Ports,
+                Tool::Ports => Tool::Prune,
+            };
+            switch_tool(app, next);
+        }
+        KeyCode::Char('1') => switch_tool(app, Tool::Prune),
+        KeyCode::Char('2') => switch_tool(app, Tool::Ports),
         _ => {}
     }
 }
 
-fn handle_filter_key(app: &mut App, code: KeyCode) {
+fn handle_prune_filter_key(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Esc => {
-            app.filter_text.clear();
+            app.prune.filter_text.clear();
             app.apply_filter();
             app.mode = AppMode::Normal;
         }
@@ -264,39 +391,38 @@ fn handle_filter_key(app: &mut App, code: KeyCode) {
             app.mode = AppMode::Normal;
         }
         KeyCode::Backspace => {
-            app.filter_text.pop();
+            app.prune.filter_text.pop();
             app.apply_filter();
         }
         KeyCode::Char(c) => {
-            app.filter_text.push(c);
+            app.prune.filter_text.push(c);
             app.apply_filter();
         }
         _ => {}
     }
 }
 
-fn handle_type_filter_key(app: &mut App, code: KeyCode) {
+fn handle_prune_sub_filter_key(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Esc | KeyCode::Char('t') => {
             app.mode = AppMode::Normal;
         }
         KeyCode::Char('j') | KeyCode::Down => {
-            if !app.available_types.is_empty() {
-                // cursor 0 = "All", then 1..=len for each type
-                let max = app.available_types.len();
-                app.type_filter_cursor = (app.type_filter_cursor + 1).min(max);
+            if !app.prune.available_types.is_empty() {
+                let max = app.prune.available_types.len();
+                app.prune.type_filter_cursor = (app.prune.type_filter_cursor + 1).min(max);
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            app.type_filter_cursor = app.type_filter_cursor.saturating_sub(1);
+            app.prune.type_filter_cursor = app.prune.type_filter_cursor.saturating_sub(1);
         }
         KeyCode::Enter => {
-            if app.type_filter_cursor == 0 {
-                app.type_filter = None;
+            if app.prune.type_filter_cursor == 0 {
+                app.prune.type_filter = None;
             } else {
-                let idx = app.type_filter_cursor - 1;
-                if let Some(t) = app.available_types.get(idx) {
-                    app.type_filter = Some(t.clone());
+                let idx = app.prune.type_filter_cursor - 1;
+                if let Some(t) = app.prune.available_types.get(idx) {
+                    app.prune.type_filter = Some(t.clone());
                 }
             }
             app.apply_filter();
@@ -306,7 +432,7 @@ fn handle_type_filter_key(app: &mut App, code: KeyCode) {
     }
 }
 
-fn handle_confirm_key(app: &mut App, code: KeyCode) {
+fn handle_prune_confirm_key(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Enter => {
             app.start_deleting();
@@ -318,7 +444,221 @@ fn handle_confirm_key(app: &mut App, code: KeyCode) {
     }
 }
 
-fn handle_help_key(app: &mut App, code: KeyCode) {
+fn handle_prune_help_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
+            app.mode = AppMode::Normal;
+        }
+        _ => {}
+    }
+}
+
+// ── Ports key handlers ──────────────────────────────────────────────────────
+
+fn handle_ports_key(app: &mut App, key: KeyEvent) {
+    match app.mode {
+        AppMode::Normal => handle_ports_normal_key(app, key.code, key.modifiers),
+        AppMode::Filter => handle_ports_filter_key(app, key.code),
+        AppMode::SubFilter => handle_ports_sub_filter_key(app, key.code),
+        AppMode::Confirm => handle_ports_confirm_key(app, key.code),
+        AppMode::Help => handle_ports_help_key(app, key.code),
+        AppMode::Processing => {}
+    }
+}
+
+fn handle_ports_normal_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+    if app.focus == app::FocusPanel::Details {
+        match code {
+            KeyCode::Char('h') | KeyCode::Left | KeyCode::Esc => {
+                app.focus = app::FocusPanel::List;
+            }
+            KeyCode::Char('q') => app.exit = true,
+            KeyCode::Tab => {
+                let next = match app.active_tool {
+                    Tool::Prune => Tool::Ports,
+                    Tool::Ports => Tool::Prune,
+                };
+                switch_tool(app, next);
+            }
+            KeyCode::Char('1') => switch_tool(app, Tool::Prune),
+            KeyCode::Char('2') => switch_tool(app, Tool::Ports),
+            _ => {}
+        }
+        return;
+    }
+
+    match code {
+        KeyCode::Char('q') | KeyCode::Esc => app.exit = true,
+        KeyCode::Char('j') | KeyCode::Down => {
+            if let Some(ref mut ports) = app.ports {
+                ports.next();
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if let Some(ref mut ports) = app.ports {
+                ports.previous();
+            }
+        }
+        KeyCode::Char('g') | KeyCode::Home => {
+            if let Some(ref mut ports) = app.ports {
+                ports.go_top();
+            }
+        }
+        KeyCode::Char('G') | KeyCode::End => {
+            if let Some(ref mut ports) = app.ports {
+                ports.go_bottom();
+            }
+        }
+        KeyCode::Char(' ') => {
+            if let Some(ref mut ports) = app.ports {
+                let pos = ports.list_state.selected().unwrap_or(0);
+                ports.toggle_selection(pos);
+            }
+        }
+        KeyCode::Char('a') if modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(ref mut ports) = app.ports {
+                ports.select_all();
+            }
+        }
+        KeyCode::Char('v') => {
+            if let Some(ref mut ports) = app.ports {
+                ports.invert_selection();
+            }
+        }
+        KeyCode::Char('/') => app.mode = AppMode::Filter,
+        KeyCode::Char('s') => {
+            if let Some(ref mut ports) = app.ports {
+                ports.cycle_sort();
+            }
+        }
+        KeyCode::Char('t') => {
+            if let Some(ref mut ports) = app.ports {
+                ports.protocol_filter_cursor = 0;
+            }
+            app.mode = AppMode::SubFilter;
+        }
+        KeyCode::Char('a') => {
+            if let Some(ref mut ports) = app.ports {
+                ports.dev_filter_active = !ports.dev_filter_active;
+                let filter = if ports.dev_filter_active {
+                    Some(ports.dev_filter_ports.clone())
+                } else {
+                    None
+                };
+                ports.start_scan(filter);
+            }
+        }
+        KeyCode::Char('r') => {
+            if let Some(ref mut ports) = app.ports {
+                let filter = if ports.dev_filter_active {
+                    Some(ports.dev_filter_ports.clone())
+                } else {
+                    None
+                };
+                ports.start_scan(filter);
+            }
+        }
+        KeyCode::Char('d') => {
+            if let Some(ref ports) = app.ports {
+                if ports.selected_count() > 0 {
+                    app.mode = AppMode::Confirm;
+                }
+            }
+        }
+        KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
+            if app.ports.as_ref().and_then(|p| p.current_item()).is_some() {
+                app.focus = app::FocusPanel::Details;
+            }
+        }
+        KeyCode::Tab => {
+            let next = match app.active_tool {
+                Tool::Prune => Tool::Ports,
+                Tool::Ports => Tool::Prune,
+            };
+            switch_tool(app, next);
+        }
+        KeyCode::Char('1') => switch_tool(app, Tool::Prune),
+        KeyCode::Char('2') => switch_tool(app, Tool::Ports),
+        KeyCode::Char('?') => app.mode = AppMode::Help,
+        _ => {}
+    }
+}
+
+fn handle_ports_filter_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc => {
+            if let Some(ref mut ports) = app.ports {
+                ports.filter_text.clear();
+                ports.apply_filter();
+            }
+            app.mode = AppMode::Normal;
+        }
+        KeyCode::Enter => {
+            app.mode = AppMode::Normal;
+        }
+        KeyCode::Backspace => {
+            if let Some(ref mut ports) = app.ports {
+                ports.filter_text.pop();
+                ports.apply_filter();
+            }
+        }
+        KeyCode::Char(c) => {
+            if let Some(ref mut ports) = app.ports {
+                ports.filter_text.push(c);
+                ports.apply_filter();
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_ports_sub_filter_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc | KeyCode::Char('t') => {
+            app.mode = AppMode::Normal;
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            if let Some(ref mut ports) = app.ports {
+                ports.protocol_filter_cursor = (ports.protocol_filter_cursor + 1).min(2);
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if let Some(ref mut ports) = app.ports {
+                ports.protocol_filter_cursor = ports.protocol_filter_cursor.saturating_sub(1);
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(ref mut ports) = app.ports {
+                match ports.protocol_filter_cursor {
+                    0 => ports.protocol_filter = None,
+                    1 => ports.protocol_filter = Some(ports::Protocol::Tcp),
+                    2 => ports.protocol_filter = Some(ports::Protocol::Udp),
+                    _ => {}
+                }
+                ports.apply_filter();
+            }
+            app.mode = AppMode::Normal;
+        }
+        _ => {}
+    }
+}
+
+fn handle_ports_confirm_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Enter => {
+            if let Some(ref mut ports) = app.ports {
+                ports.start_killing();
+                app.mode = AppMode::Processing;
+            }
+        }
+        KeyCode::Esc => {
+            app.mode = AppMode::Normal;
+        }
+        _ => {}
+    }
+}
+
+fn handle_ports_help_key(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
             app.mode = AppMode::Normal;

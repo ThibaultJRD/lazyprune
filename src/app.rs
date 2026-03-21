@@ -1,3 +1,5 @@
+use crate::config::{parse_port_filter, Config};
+use crate::ports::PortsState;
 use crate::scanner::{ScanMessage, ScanResult};
 use ratatui::widgets::ListState;
 use std::sync::mpsc;
@@ -53,10 +55,16 @@ impl SortMode {
 pub enum AppMode {
     Normal,
     Filter,
-    TypeFilter,
+    SubFilter,
     Confirm,
-    Deleting,
+    Processing,
     Help,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tool {
+    Prune,
+    Ports,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -87,13 +95,12 @@ pub struct GroupInfo {
     pub targets: Vec<(String, String, u64)>, // (target_name, relative_path, size)
 }
 
-pub struct App {
+pub struct PruneState {
     pub items: Vec<ScanResult>,
     pub filtered_indices: Vec<usize>,
     pub selected: Vec<bool>,
     pub list_state: ListState,
     pub sort_mode: SortMode,
-    pub mode: AppMode,
     pub filter_text: String,
     pub type_filter: Option<String>,
     pub scan_rx: Option<mpsc::Receiver<ScanMessage>>,
@@ -103,7 +110,6 @@ pub struct App {
     pub items_deleted: usize,
     pub scan_errors: u64,
     pub scan_tick: u8,
-    pub exit: bool,
     pub available_types: Vec<String>,
     pub type_filter_cursor: usize,
     pub delete_rx: Option<mpsc::Receiver<DeleteMessage>>,
@@ -114,7 +120,6 @@ pub struct App {
     pub delete_done_indices: Vec<usize>,
     pub group_separators: std::collections::HashSet<usize>,
     pub project_grouping: bool,
-    pub focus: FocusPanel,
     pub tree_cache: std::collections::HashMap<std::path::PathBuf, TreeData>,
     pub tree_rx: Option<mpsc::Receiver<(std::path::PathBuf, TreeData)>>,
     pub tree_loading: bool,
@@ -124,52 +129,89 @@ pub struct App {
     pub path_index_map: std::collections::HashMap<std::path::PathBuf, usize>,
 }
 
+pub struct App {
+    pub active_tool: Tool,
+    pub prune: PruneState,
+    pub ports: Option<PortsState>,
+    pub mode: AppMode,
+    pub focus: FocusPanel,
+    pub exit: bool,
+    #[allow(dead_code)]
+    pub config: Config,
+}
+
 impl App {
-    pub fn new(scan_rx: mpsc::Receiver<ScanMessage>) -> Self {
+    pub fn new(scan_rx: mpsc::Receiver<ScanMessage>, config: Config) -> Self {
         let mut list_state = ListState::default();
         list_state.select(Some(0));
         *list_state.offset_mut() = 0;
         Self {
-            items: Vec::new(),
-            filtered_indices: Vec::new(),
-            selected: Vec::new(),
-            list_state,
-            sort_mode: SortMode::SizeDesc,
+            prune: PruneState {
+                items: Vec::new(),
+                filtered_indices: Vec::new(),
+                selected: Vec::new(),
+                list_state,
+                sort_mode: SortMode::SizeDesc,
+                filter_text: String::new(),
+                type_filter: None,
+                scan_rx: Some(scan_rx),
+                scan_complete: false,
+                dirs_scanned: 0,
+                total_deleted: 0,
+                items_deleted: 0,
+                scan_errors: 0,
+                scan_tick: 0,
+                available_types: Vec::new(),
+                type_filter_cursor: 0,
+                delete_rx: None,
+                delete_total: 0,
+                delete_progress: 0,
+                delete_current_path: String::new(),
+                delete_errors: Vec::new(),
+                delete_done_indices: Vec::new(),
+                group_separators: std::collections::HashSet::new(),
+                project_grouping: false,
+                tree_cache: std::collections::HashMap::new(),
+                tree_rx: None,
+                tree_loading: false,
+                tree_scroll: 0,
+                tree_debounce_at: None,
+                tree_requested_path: None,
+                path_index_map: std::collections::HashMap::new(),
+            },
+            active_tool: Tool::Prune,
+            ports: None,
             mode: AppMode::Normal,
-            filter_text: String::new(),
-            type_filter: None,
-            scan_rx: Some(scan_rx),
-            scan_complete: false,
-            dirs_scanned: 0,
-            total_deleted: 0,
-            items_deleted: 0,
-            scan_errors: 0,
-            scan_tick: 0,
-            exit: false,
-            available_types: Vec::new(),
-            type_filter_cursor: 0,
-            delete_rx: None,
-            delete_total: 0,
-            delete_progress: 0,
-            delete_current_path: String::new(),
-            delete_errors: Vec::new(),
-            delete_done_indices: Vec::new(),
-            group_separators: std::collections::HashSet::new(),
-            project_grouping: false,
             focus: FocusPanel::List,
-            tree_cache: std::collections::HashMap::new(),
-            tree_rx: None,
-            tree_loading: false,
-            tree_scroll: 0,
-            tree_debounce_at: None,
-            tree_requested_path: None,
-            path_index_map: std::collections::HashMap::new(),
+            exit: false,
+            config,
         }
+    }
+
+    /// Lazily initialize PortsState and start the port scan if not yet done.
+    pub fn ensure_ports_initialized(&mut self) {
+        if self.ports.is_some() {
+            return;
+        }
+
+        let dev_filter = if self.config.ports.dev_filter_enabled {
+            Some(parse_port_filter(&self.config.ports.dev_filter))
+        } else {
+            None
+        };
+
+        let mut state = PortsState::new();
+        if let Some(ref ports) = dev_filter {
+            state.dev_filter_active = true;
+            state.dev_filter_ports = ports.clone();
+        }
+        state.start_scan(dev_filter);
+        self.ports = Some(state);
     }
 
     /// Drain the scan channel non-blocking, adding results and tracking progress.
     pub fn poll_scan_results(&mut self) {
-        let rx = match self.scan_rx.as_ref() {
+        let rx = match self.prune.scan_rx.as_ref() {
             Some(rx) => rx,
             None => return,
         };
@@ -178,36 +220,36 @@ impl App {
             match rx.try_recv() {
                 Ok(msg) => match msg {
                     ScanMessage::Found(result) => {
-                        if !self.available_types.contains(&result.target_name) {
-                            self.available_types.push(result.target_name.clone());
+                        if !self.prune.available_types.contains(&result.target_name) {
+                            self.prune.available_types.push(result.target_name.clone());
                         }
-                        let idx = self.items.len();
-                        self.path_index_map.insert(result.path.clone(), idx);
-                        self.items.push(result);
-                        self.selected.push(false);
+                        let idx = self.prune.items.len();
+                        self.prune.path_index_map.insert(result.path.clone(), idx);
+                        self.prune.items.push(result);
+                        self.prune.selected.push(false);
                         // Append to filtered_indices if passes filter (no sort yet)
-                        let item = &self.items[idx];
+                        let item = &self.prune.items[idx];
                         if self.item_passes_filter(item) {
-                            self.filtered_indices.push(idx);
+                            self.prune.filtered_indices.push(idx);
                         }
                     }
                     ScanMessage::Complete => {
-                        self.scan_complete = true;
-                        self.scan_rx = None;
+                        self.prune.scan_complete = true;
+                        self.prune.scan_rx = None;
                         self.apply_filter();
                         return;
                     }
                     ScanMessage::Progress { dirs_scanned } => {
-                        self.dirs_scanned = dirs_scanned;
+                        self.prune.dirs_scanned = dirs_scanned;
                     }
                     ScanMessage::Error(_) => {
-                        self.scan_errors += 1;
+                        self.prune.scan_errors += 1;
                     }
                 },
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    self.scan_complete = true;
-                    self.scan_rx = None;
+                    self.prune.scan_complete = true;
+                    self.prune.scan_rx = None;
                     self.apply_filter();
                     return;
                 }
@@ -217,22 +259,22 @@ impl App {
 
     /// Get the item currently under the cursor.
     pub fn current_item(&self) -> Option<&ScanResult> {
-        let idx = self.list_state.selected()?;
-        if self.group_separators.contains(&idx) {
+        let idx = self.prune.list_state.selected()?;
+        if self.prune.group_separators.contains(&idx) {
             return None;
         }
-        let &item_idx = self.filtered_indices.get(idx)?;
-        self.items.get(item_idx)
+        let &item_idx = self.prune.filtered_indices.get(idx)?;
+        self.prune.items.get(item_idx)
     }
 
     /// Get group info when cursor is on a separator.
     pub fn current_group_info(&self) -> Option<GroupInfo> {
-        let idx = self.list_state.selected()?;
-        if !self.group_separators.contains(&idx) {
+        let idx = self.prune.list_state.selected()?;
+        if !self.prune.group_separators.contains(&idx) {
             return None;
         }
 
-        let group_item_indices: Vec<usize> = self.filtered_indices[idx + 1..]
+        let group_item_indices: Vec<usize> = self.prune.filtered_indices[idx + 1..]
             .iter()
             .take_while(|&&i| i != usize::MAX)
             .copied()
@@ -242,7 +284,7 @@ impl App {
             return None;
         }
 
-        let first_item = &self.items[group_item_indices[0]];
+        let first_item = &self.prune.items[group_item_indices[0]];
 
         let project_path = first_item.git_root.clone().unwrap_or_else(|| {
             first_item
@@ -258,12 +300,15 @@ impl App {
             .unwrap_or("?")
             .to_string();
 
-        let total_size: u64 = group_item_indices.iter().map(|&i| self.items[i].size).sum();
+        let total_size: u64 = group_item_indices
+            .iter()
+            .map(|&i| self.prune.items[i].size)
+            .sum();
 
         let targets: Vec<(String, String, u64)> = group_item_indices
             .iter()
             .map(|&i| {
-                let item = &self.items[i];
+                let item = &self.prune.items[i];
                 let rel_path = item
                     .path
                     .strip_prefix(&project_path)
@@ -283,14 +328,14 @@ impl App {
 
     /// Move cursor down with bounds clamping.
     pub fn next(&mut self) {
-        if self.filtered_indices.is_empty() {
+        if self.prune.filtered_indices.is_empty() {
             return;
         }
-        let current = self.list_state.selected().unwrap_or(0);
-        let next = (current + 1).min(self.filtered_indices.len() - 1);
-        self.list_state.select(Some(next));
-        self.tree_scroll = 0;
-        if self.group_separators.contains(&next) {
+        let current = self.prune.list_state.selected().unwrap_or(0);
+        let next = (current + 1).min(self.prune.filtered_indices.len() - 1);
+        self.prune.list_state.select(Some(next));
+        self.prune.tree_scroll = 0;
+        if self.prune.group_separators.contains(&next) {
             self.request_group_tree_scan();
         } else {
             self.request_tree_scan();
@@ -299,14 +344,14 @@ impl App {
 
     /// Move cursor up with bounds clamping.
     pub fn previous(&mut self) {
-        if self.filtered_indices.is_empty() {
+        if self.prune.filtered_indices.is_empty() {
             return;
         }
-        let current = self.list_state.selected().unwrap_or(0);
+        let current = self.prune.list_state.selected().unwrap_or(0);
         let prev = current.saturating_sub(1);
-        self.list_state.select(Some(prev));
-        self.tree_scroll = 0;
-        if self.group_separators.contains(&prev) {
+        self.prune.list_state.select(Some(prev));
+        self.prune.tree_scroll = 0;
+        if self.prune.group_separators.contains(&prev) {
             self.request_group_tree_scan();
         } else {
             self.request_tree_scan();
@@ -315,11 +360,11 @@ impl App {
 
     /// Jump to top of list.
     pub fn go_top(&mut self) {
-        if !self.filtered_indices.is_empty() {
-            self.list_state.select(Some(0));
+        if !self.prune.filtered_indices.is_empty() {
+            self.prune.list_state.select(Some(0));
         }
-        self.tree_scroll = 0;
-        if self.group_separators.contains(&0) {
+        self.prune.tree_scroll = 0;
+        if self.prune.group_separators.contains(&0) {
             self.request_group_tree_scan();
         } else {
             self.request_tree_scan();
@@ -328,13 +373,13 @@ impl App {
 
     /// Jump to bottom of list.
     pub fn go_bottom(&mut self) {
-        if !self.filtered_indices.is_empty() {
-            let last = self.filtered_indices.len() - 1;
-            self.list_state.select(Some(last));
+        if !self.prune.filtered_indices.is_empty() {
+            let last = self.prune.filtered_indices.len() - 1;
+            self.prune.list_state.select(Some(last));
         }
-        self.tree_scroll = 0;
-        let pos = self.list_state.selected().unwrap_or(0);
-        if self.group_separators.contains(&pos) {
+        self.prune.tree_scroll = 0;
+        let pos = self.prune.list_state.selected().unwrap_or(0);
+        if self.prune.group_separators.contains(&pos) {
             self.request_group_tree_scan();
         } else {
             self.request_tree_scan();
@@ -343,63 +388,64 @@ impl App {
 
     /// Toggle selection of the current item.
     pub fn toggle_selection(&mut self) {
-        let Some(idx) = self.list_state.selected() else {
+        let Some(idx) = self.prune.list_state.selected() else {
             return;
         };
-        if self.group_separators.contains(&idx) {
+        if self.prune.group_separators.contains(&idx) {
             // Find all items in this group (between this separator and the next)
-            let group_items: Vec<usize> = self.filtered_indices[idx + 1..]
+            let group_items: Vec<usize> = self.prune.filtered_indices[idx + 1..]
                 .iter()
                 .take_while(|&&i| i != usize::MAX)
                 .copied()
                 .collect();
-            let all_selected = group_items.iter().all(|&i| self.selected[i]);
+            let all_selected = group_items.iter().all(|&i| self.prune.selected[i]);
             for &i in &group_items {
-                self.selected[i] = !all_selected;
+                self.prune.selected[i] = !all_selected;
             }
             return;
         }
-        if let Some(&item_idx) = self.filtered_indices.get(idx) {
-            self.selected[item_idx] = !self.selected[item_idx];
+        if let Some(&item_idx) = self.prune.filtered_indices.get(idx) {
+            self.prune.selected[item_idx] = !self.prune.selected[item_idx];
         }
     }
 
     /// Select all visible (filtered) items.
     pub fn select_all(&mut self) {
-        for (pos, &idx) in self.filtered_indices.iter().enumerate() {
-            if !self.group_separators.contains(&pos) && idx != usize::MAX {
-                self.selected[idx] = true;
+        for (pos, &idx) in self.prune.filtered_indices.iter().enumerate() {
+            if !self.prune.group_separators.contains(&pos) && idx != usize::MAX {
+                self.prune.selected[idx] = true;
             }
         }
     }
 
     /// Invert selection of all visible (filtered) items.
     pub fn invert_selection(&mut self) {
-        for (pos, &idx) in self.filtered_indices.iter().enumerate() {
-            if !self.group_separators.contains(&pos) && idx != usize::MAX {
-                self.selected[idx] = !self.selected[idx];
+        for (pos, &idx) in self.prune.filtered_indices.iter().enumerate() {
+            if !self.prune.group_separators.contains(&pos) && idx != usize::MAX {
+                self.prune.selected[idx] = !self.prune.selected[idx];
             }
         }
     }
 
     /// Cycle to the next sort mode, re-sort, and re-filter.
     pub fn cycle_sort(&mut self) {
-        self.sort_mode = self.sort_mode.next();
+        self.prune.sort_mode = self.prune.sort_mode.next();
         self.apply_filter();
     }
 
     /// Toggle project grouping on/off, re-sort and re-filter.
     pub fn toggle_project_grouping(&mut self) {
-        self.project_grouping = !self.project_grouping;
+        self.prune.project_grouping = !self.prune.project_grouping;
         self.apply_filter();
     }
 
     /// Return references to all selected items.
     pub fn selected_items(&self) -> Vec<&ScanResult> {
-        self.items
+        self.prune
+            .items
             .iter()
             .enumerate()
-            .filter(|(i, _)| self.selected.get(*i).copied().unwrap_or(false))
+            .filter(|(i, _)| self.prune.selected.get(*i).copied().unwrap_or(false))
             .map(|(_, item)| item)
             .collect()
     }
@@ -413,8 +459,8 @@ impl App {
     /// Indices are processed in descending order so that `items.remove(idx)` doesn't
     /// invalidate remaining indices.
     pub fn start_deleting(&mut self) {
-        let mut indices: Vec<usize> = (0..self.items.len())
-            .filter(|&i| self.selected[i])
+        let mut indices: Vec<usize> = (0..self.prune.items.len())
+            .filter(|&i| self.prune.selected[i])
             .collect();
         indices.reverse();
 
@@ -422,20 +468,26 @@ impl App {
             return;
         }
 
-        self.delete_total = indices.len();
-        self.delete_progress = 0;
-        self.delete_current_path = String::new();
-        self.delete_errors = Vec::new();
-        self.delete_done_indices = Vec::new();
+        self.prune.delete_total = indices.len();
+        self.prune.delete_progress = 0;
+        self.prune.delete_current_path = String::new();
+        self.prune.delete_errors = Vec::new();
+        self.prune.delete_done_indices = Vec::new();
 
         let items_to_delete: Vec<(usize, std::path::PathBuf, u64)> = indices
             .iter()
-            .map(|&i| (i, self.items[i].path.clone(), self.items[i].size))
+            .map(|&i| {
+                (
+                    i,
+                    self.prune.items[i].path.clone(),
+                    self.prune.items[i].size,
+                )
+            })
             .collect();
 
         let (tx, rx) = mpsc::channel();
-        self.delete_rx = Some(rx);
-        self.mode = AppMode::Deleting;
+        self.prune.delete_rx = Some(rx);
+        self.mode = AppMode::Processing;
 
         std::thread::spawn(move || {
             use rayon::prelude::*;
@@ -463,7 +515,7 @@ impl App {
 
     /// Poll the deletion channel for progress updates.
     pub fn poll_delete_results(&mut self) {
-        let rx = match self.delete_rx.as_ref() {
+        let rx = match self.prune.delete_rx.as_ref() {
             Some(rx) => rx,
             None => return,
         };
@@ -472,35 +524,35 @@ impl App {
             match rx.try_recv() {
                 Ok(msg) => match msg {
                     DeleteMessage::Deleting { path } => {
-                        self.delete_current_path = path;
+                        self.prune.delete_current_path = path;
                     }
                     DeleteMessage::Deleted { idx, size } => {
-                        self.total_deleted += size;
-                        self.items_deleted += 1;
-                        self.delete_progress += 1;
-                        self.delete_done_indices.push(idx);
+                        self.prune.total_deleted += size;
+                        self.prune.items_deleted += 1;
+                        self.prune.delete_progress += 1;
+                        self.prune.delete_done_indices.push(idx);
                     }
                     DeleteMessage::Error { idx: _, err } => {
-                        self.delete_progress += 1;
-                        self.delete_errors.push(err);
+                        self.prune.delete_progress += 1;
+                        self.prune.delete_errors.push(err);
                     }
                     DeleteMessage::Complete => {
-                        self.delete_rx = None;
+                        self.prune.delete_rx = None;
                         // Remove deleted items from highest index to lowest
-                        self.delete_done_indices.sort_unstable();
-                        self.delete_done_indices.dedup();
-                        for &idx in self.delete_done_indices.iter().rev() {
-                            self.items.remove(idx);
-                            self.selected.remove(idx);
+                        self.prune.delete_done_indices.sort_unstable();
+                        self.prune.delete_done_indices.dedup();
+                        for &idx in self.prune.delete_done_indices.iter().rev() {
+                            self.prune.items.remove(idx);
+                            self.prune.selected.remove(idx);
                         }
                         // Deselect all items (errored items stay in list but unselected)
-                        for s in &mut self.selected {
+                        for s in &mut self.prune.selected {
                             *s = false;
                         }
                         // path_index_map is stale after removal (indices shifted),
                         // but it's only used during scan which is already complete.
-                        self.path_index_map.clear();
-                        self.tree_cache.clear();
+                        self.prune.path_index_map.clear();
+                        self.prune.tree_cache.clear();
                         self.apply_filter();
                         self.mode = AppMode::Normal;
                         return;
@@ -508,7 +560,7 @@ impl App {
                 },
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    self.delete_rx = None;
+                    self.prune.delete_rx = None;
                     self.apply_filter();
                     self.mode = AppMode::Normal;
                     return;
@@ -521,18 +573,18 @@ impl App {
 
     /// Count of selected items.
     pub fn selected_count(&self) -> usize {
-        self.selected.iter().filter(|&&s| s).count()
+        self.prune.selected.iter().filter(|&&s| s).count()
     }
 
     /// Check if a single item passes the current text and type filters.
     fn item_passes_filter(&self, item: &ScanResult) -> bool {
-        if !self.filter_text.is_empty() {
+        if !self.prune.filter_text.is_empty() {
             let path_str = item.path.to_string_lossy().to_lowercase();
-            if !path_str.contains(&self.filter_text.to_lowercase()) {
+            if !path_str.contains(&self.prune.filter_text.to_lowercase()) {
                 return false;
             }
         }
-        if let Some(ref tf) = self.type_filter {
+        if let Some(ref tf) = self.prune.type_filter {
             if item.target_name != *tf {
                 return false;
             }
@@ -542,8 +594,9 @@ impl App {
 
     /// Rebuild filtered_indices: filter, sort, and optionally group.
     pub fn apply_filter(&mut self) {
-        let filter_lower = self.filter_text.to_lowercase();
+        let filter_lower = self.prune.filter_text.to_lowercase();
         let mut base_indices: Vec<usize> = self
+            .prune
             .items
             .iter()
             .enumerate()
@@ -554,7 +607,7 @@ impl App {
                         return false;
                     }
                 }
-                if let Some(ref tf) = self.type_filter {
+                if let Some(ref tf) = self.prune.type_filter {
                     if item.target_name != *tf {
                         return false;
                     }
@@ -565,40 +618,38 @@ impl App {
             .collect();
 
         // Sort filtered indices by current sort mode (no item cloning)
-        match self.sort_mode {
-            SortMode::SizeDesc => {
-                base_indices.sort_unstable_by(|&a, &b| self.items[b].size.cmp(&self.items[a].size))
-            }
-            SortMode::SizeAsc => {
-                base_indices.sort_unstable_by(|&a, &b| self.items[a].size.cmp(&self.items[b].size))
-            }
+        match self.prune.sort_mode {
+            SortMode::SizeDesc => base_indices
+                .sort_unstable_by(|&a, &b| self.prune.items[b].size.cmp(&self.prune.items[a].size)),
+            SortMode::SizeAsc => base_indices
+                .sort_unstable_by(|&a, &b| self.prune.items[a].size.cmp(&self.prune.items[b].size)),
             SortMode::Name => base_indices.sort_unstable_by(|&a, &b| {
-                self.items[a]
+                self.prune.items[a]
                     .path
                     .to_string_lossy()
-                    .cmp(&self.items[b].path.to_string_lossy())
+                    .cmp(&self.prune.items[b].path.to_string_lossy())
             }),
             SortMode::DateDesc => base_indices.sort_unstable_by(|&a, &b| {
-                self.items[b]
+                self.prune.items[b]
                     .last_modified
-                    .cmp(&self.items[a].last_modified)
+                    .cmp(&self.prune.items[a].last_modified)
             }),
             SortMode::DateAsc => base_indices.sort_unstable_by(|&a, &b| {
-                self.items[a]
+                self.prune.items[a]
                     .last_modified
-                    .cmp(&self.items[b].last_modified)
+                    .cmp(&self.prune.items[b].last_modified)
             }),
         }
 
-        self.group_separators.clear();
-        if self.project_grouping && !base_indices.is_empty() {
+        self.prune.group_separators.clear();
+        if self.prune.project_grouping && !base_indices.is_empty() {
             use std::collections::HashMap;
 
             // Group indices by project key (git_root or parent).
             // Iterating sorted base_indices preserves sort order within each group.
             let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
             for &idx in &base_indices {
-                let item = &self.items[idx];
+                let item = &self.prune.items[idx];
                 let key = item
                     .git_root
                     .as_ref()
@@ -614,18 +665,18 @@ impl App {
 
             // Sort groups by active sort mode
             let mut group_list: Vec<(String, Vec<usize>)> = groups.into_iter().collect();
-            match self.sort_mode {
+            match self.prune.sort_mode {
                 SortMode::SizeDesc => {
                     group_list.sort_unstable_by(|a, b| {
-                        let size_a: u64 = a.1.iter().map(|&i| self.items[i].size).sum();
-                        let size_b: u64 = b.1.iter().map(|&i| self.items[i].size).sum();
+                        let size_a: u64 = a.1.iter().map(|&i| self.prune.items[i].size).sum();
+                        let size_b: u64 = b.1.iter().map(|&i| self.prune.items[i].size).sum();
                         size_b.cmp(&size_a).then_with(|| a.0.cmp(&b.0))
                     });
                 }
                 SortMode::SizeAsc => {
                     group_list.sort_unstable_by(|a, b| {
-                        let size_a: u64 = a.1.iter().map(|&i| self.items[i].size).sum();
-                        let size_b: u64 = b.1.iter().map(|&i| self.items[i].size).sum();
+                        let size_a: u64 = a.1.iter().map(|&i| self.prune.items[i].size).sum();
+                        let size_b: u64 = b.1.iter().map(|&i| self.prune.items[i].size).sum();
                         size_a.cmp(&size_b).then_with(|| a.0.cmp(&b.0))
                     });
                 }
@@ -636,11 +687,11 @@ impl App {
                     group_list.sort_unstable_by(|a, b| {
                         let date_a =
                             a.1.iter()
-                                .filter_map(|&i| self.items[i].last_modified)
+                                .filter_map(|&i| self.prune.items[i].last_modified)
                                 .max();
                         let date_b =
                             b.1.iter()
-                                .filter_map(|&i| self.items[i].last_modified)
+                                .filter_map(|&i| self.prune.items[i].last_modified)
                                 .max();
                         date_b.cmp(&date_a).then_with(|| a.0.cmp(&b.0))
                     });
@@ -649,11 +700,11 @@ impl App {
                     group_list.sort_unstable_by(|a, b| {
                         let date_a =
                             a.1.iter()
-                                .filter_map(|&i| self.items[i].last_modified)
+                                .filter_map(|&i| self.prune.items[i].last_modified)
                                 .min();
                         let date_b =
                             b.1.iter()
-                                .filter_map(|&i| self.items[i].last_modified)
+                                .filter_map(|&i| self.prune.items[i].last_modified)
                                 .min();
                         date_a.cmp(&date_b).then_with(|| a.0.cmp(&b.0))
                     });
@@ -661,24 +712,27 @@ impl App {
             }
 
             // Build filtered_indices with separators
-            self.filtered_indices = Vec::new();
+            self.prune.filtered_indices = Vec::new();
             for (_, group_indices) in &group_list {
-                self.group_separators.insert(self.filtered_indices.len());
-                self.filtered_indices.push(usize::MAX); // sentinel
-                self.filtered_indices.extend(group_indices);
+                self.prune
+                    .group_separators
+                    .insert(self.prune.filtered_indices.len());
+                self.prune.filtered_indices.push(usize::MAX); // sentinel
+                self.prune.filtered_indices.extend(group_indices);
             }
         } else {
-            self.filtered_indices = base_indices;
+            self.prune.filtered_indices = base_indices;
         }
 
         // Clamp cursor
-        if self.filtered_indices.is_empty() {
-            self.list_state.select(Some(0));
+        if self.prune.filtered_indices.is_empty() {
+            self.prune.list_state.select(Some(0));
         } else {
-            let current = self.list_state.selected().unwrap_or(0);
-            if current >= self.filtered_indices.len() {
-                self.list_state
-                    .select(Some(self.filtered_indices.len() - 1));
+            let current = self.prune.list_state.selected().unwrap_or(0);
+            if current >= self.prune.filtered_indices.len() {
+                self.prune
+                    .list_state
+                    .select(Some(self.prune.filtered_indices.len() - 1));
             }
         }
     }
@@ -792,13 +846,13 @@ impl App {
         };
         let path = item.path.clone();
 
-        if self.tree_cache.contains_key(&path) {
+        if self.prune.tree_cache.contains_key(&path) {
             return;
         }
 
-        self.tree_debounce_at =
+        self.prune.tree_debounce_at =
             Some(std::time::Instant::now() + std::time::Duration::from_millis(200));
-        self.tree_requested_path = Some(path);
+        self.prune.tree_requested_path = Some(path);
     }
 
     /// Request a tree scan for the current group's project root.
@@ -808,18 +862,18 @@ impl App {
             None => return,
         };
 
-        if self.tree_cache.contains_key(&info.path) {
+        if self.prune.tree_cache.contains_key(&info.path) {
             return;
         }
 
-        self.tree_debounce_at =
+        self.prune.tree_debounce_at =
             Some(std::time::Instant::now() + std::time::Duration::from_millis(200));
-        self.tree_requested_path = Some(info.path);
+        self.prune.tree_requested_path = Some(info.path);
     }
 
     /// Check if debounce timer has elapsed and launch the tree scan thread.
     pub fn maybe_start_tree_scan(&mut self) {
-        let deadline = match self.tree_debounce_at {
+        let deadline = match self.prune.tree_debounce_at {
             Some(d) => d,
             None => return,
         };
@@ -828,23 +882,23 @@ impl App {
             return;
         }
 
-        let path = match self.tree_requested_path.take() {
+        let path = match self.prune.tree_requested_path.take() {
             Some(p) => p,
             None => return,
         };
-        self.tree_debounce_at = None;
+        self.prune.tree_debounce_at = None;
 
-        if self.tree_cache.contains_key(&path) {
+        if self.prune.tree_cache.contains_key(&path) {
             return;
         }
 
-        if self.tree_loading {
+        if self.prune.tree_loading {
             return;
         }
 
-        self.tree_loading = true;
+        self.prune.tree_loading = true;
         let (tx, rx) = mpsc::channel();
-        self.tree_rx = Some(rx);
+        self.prune.tree_rx = Some(rx);
 
         let scan_path = path.clone();
         std::thread::spawn(move || {
@@ -854,22 +908,22 @@ impl App {
     }
 
     pub fn tree_scroll_down(&mut self) {
-        self.tree_scroll = self.tree_scroll.saturating_add(1);
+        self.prune.tree_scroll = self.prune.tree_scroll.saturating_add(1);
     }
 
     pub fn tree_scroll_up(&mut self) {
-        self.tree_scroll = self.tree_scroll.saturating_sub(1);
+        self.prune.tree_scroll = self.prune.tree_scroll.saturating_sub(1);
     }
 
     pub fn tree_scroll_top(&mut self) {
-        self.tree_scroll = 0;
+        self.prune.tree_scroll = 0;
     }
 
     pub fn tree_scroll_bottom(&mut self, visible_height: u16) {
         if let Some(item) = self.current_item() {
-            if let Some(data) = self.tree_cache.get(&item.path) {
+            if let Some(data) = self.prune.tree_cache.get(&item.path) {
                 let total = data.entries.len() as u16;
-                self.tree_scroll = total.saturating_sub(visible_height);
+                self.prune.tree_scroll = total.saturating_sub(visible_height);
             }
         }
     }
@@ -884,21 +938,21 @@ impl App {
 
     /// Poll for completed tree scan results.
     pub fn poll_tree_results(&mut self) {
-        let rx = match self.tree_rx.as_ref() {
+        let rx = match self.prune.tree_rx.as_ref() {
             Some(rx) => rx,
             None => return,
         };
 
         match rx.try_recv() {
             Ok((path, data)) => {
-                self.tree_cache.insert(path, data);
-                self.tree_loading = false;
-                self.tree_rx = None;
+                self.prune.tree_cache.insert(path, data);
+                self.prune.tree_loading = false;
+                self.prune.tree_rx = None;
             }
             Err(mpsc::TryRecvError::Empty) => {}
             Err(mpsc::TryRecvError::Disconnected) => {
-                self.tree_loading = false;
-                self.tree_rx = None;
+                self.prune.tree_loading = false;
+                self.prune.tree_rx = None;
             }
         }
     }
@@ -969,9 +1023,10 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         drop(tx);
         let n = items.len();
-        let mut app = App::new(rx);
-        app.items = items;
-        app.selected = vec![false; n];
+        let config = Config::load(None).unwrap();
+        let mut app = App::new(rx, config);
+        app.prune.items = items;
+        app.prune.selected = vec![false; n];
         app.apply_filter();
         app
     }
@@ -984,12 +1039,12 @@ mod tests {
             make_result("node_modules", "/c/node_modules", 200),
         ]);
 
-        app.sort_mode = SortMode::SizeDesc;
+        app.prune.sort_mode = SortMode::SizeDesc;
         app.apply_filter();
 
-        assert_eq!(app.items[app.filtered_indices[0]].size, 500);
-        assert_eq!(app.items[app.filtered_indices[1]].size, 200);
-        assert_eq!(app.items[app.filtered_indices[2]].size, 100);
+        assert_eq!(app.prune.items[app.prune.filtered_indices[0]].size, 500);
+        assert_eq!(app.prune.items[app.prune.filtered_indices[1]].size, 200);
+        assert_eq!(app.prune.items[app.prune.filtered_indices[2]].size, 100);
     }
 
     #[test]
@@ -1000,12 +1055,14 @@ mod tests {
             make_result("Pods", "/projects/ios/Pods", 300),
         ]);
 
-        app.filter_text = "api".to_string();
+        app.prune.filter_text = "api".to_string();
         app.apply_filter();
 
-        assert_eq!(app.filtered_indices.len(), 1);
+        assert_eq!(app.prune.filtered_indices.len(), 1);
         assert_eq!(
-            app.items[app.filtered_indices[0]].path.to_string_lossy(),
+            app.prune.items[app.prune.filtered_indices[0]]
+                .path
+                .to_string_lossy(),
             "/projects/api/node_modules"
         );
     }
@@ -1018,11 +1075,14 @@ mod tests {
             make_result("node_modules", "/c/node_modules", 300),
         ]);
 
-        app.type_filter = Some("Pods".to_string());
+        app.prune.type_filter = Some("Pods".to_string());
         app.apply_filter();
 
-        assert_eq!(app.filtered_indices.len(), 1);
-        assert_eq!(app.items[app.filtered_indices[0]].target_name, "Pods");
+        assert_eq!(app.prune.filtered_indices.len(), 1);
+        assert_eq!(
+            app.prune.items[app.prune.filtered_indices[0]].target_name,
+            "Pods"
+        );
     }
 
     #[test]
@@ -1033,14 +1093,14 @@ mod tests {
         ]);
 
         // Cursor is at 0
-        app.list_state.select(Some(0));
+        app.prune.list_state.select(Some(0));
         app.toggle_selection();
-        let idx = app.filtered_indices[0];
-        assert!(app.selected[idx]);
+        let idx = app.prune.filtered_indices[0];
+        assert!(app.prune.selected[idx]);
 
         // Toggle again to deselect
         app.toggle_selection();
-        assert!(!app.selected[idx]);
+        assert!(!app.prune.selected[idx]);
     }
 
     #[test]
@@ -1052,14 +1112,14 @@ mod tests {
         ]);
 
         // Select first item
-        let first_idx = app.filtered_indices[0];
-        app.selected[first_idx] = true;
+        let first_idx = app.prune.filtered_indices[0];
+        app.prune.selected[first_idx] = true;
 
         app.invert_selection();
 
-        assert!(!app.selected[app.filtered_indices[0]]);
-        assert!(app.selected[app.filtered_indices[1]]);
-        assert!(app.selected[app.filtered_indices[2]]);
+        assert!(!app.prune.selected[app.prune.filtered_indices[0]]);
+        assert!(app.prune.selected[app.prune.filtered_indices[1]]);
+        assert!(app.prune.selected[app.prune.filtered_indices[2]]);
     }
 
     #[test]
@@ -1089,7 +1149,7 @@ mod tests {
     #[test]
     fn test_tree_cache_persists_across_navigation() {
         let mut app = make_test_app(vec![make_result("node_modules", "/a/node_modules", 100)]);
-        app.tree_cache.insert(
+        app.prune.tree_cache.insert(
             std::path::PathBuf::from("/a/node_modules"),
             TreeData {
                 entries: vec![],
@@ -1097,8 +1157,9 @@ mod tests {
                 project_type: None,
             },
         );
-        assert!(!app.tree_cache.is_empty());
+        assert!(!app.prune.tree_cache.is_empty());
         assert!(app
+            .prune
             .tree_cache
             .contains_key(&std::path::PathBuf::from("/a/node_modules")));
     }
@@ -1138,20 +1199,20 @@ mod tests {
         items[2].git_root = Some(PathBuf::from("/projects/other"));
 
         let mut app = make_test_app(items);
-        app.project_grouping = true;
+        app.prune.project_grouping = true;
         app.apply_filter();
 
         // my-app group (600) first, then other (200)
-        assert_eq!(app.group_separators.len(), 2);
+        assert_eq!(app.prune.group_separators.len(), 2);
 
-        let real: Vec<usize> = (0..app.filtered_indices.len())
-            .filter(|i| !app.group_separators.contains(i))
-            .map(|i| app.filtered_indices[i])
+        let real: Vec<usize> = (0..app.prune.filtered_indices.len())
+            .filter(|i| !app.prune.group_separators.contains(i))
+            .map(|i| app.prune.filtered_indices[i])
             .collect();
         // my-app items first (sorted by size desc: 500, 100), then other (200)
-        assert_eq!(app.items[real[0]].size, 500);
-        assert_eq!(app.items[real[1]].size, 100);
-        assert_eq!(app.items[real[2]].size, 200);
+        assert_eq!(app.prune.items[real[0]].size, 500);
+        assert_eq!(app.prune.items[real[1]].size, 100);
+        assert_eq!(app.prune.items[real[2]].size, 200);
     }
 
     #[test]
@@ -1162,11 +1223,11 @@ mod tests {
         ];
 
         let mut app = make_test_app(items);
-        app.project_grouping = true;
+        app.prune.project_grouping = true;
         app.apply_filter();
 
         // Two separate groups (different parents)
-        assert_eq!(app.group_separators.len(), 2);
+        assert_eq!(app.prune.group_separators.len(), 2);
     }
 
     #[test]
@@ -1179,33 +1240,10 @@ mod tests {
         items[1].git_root = Some(PathBuf::from("/projects/my-app"));
 
         let mut app = make_test_app(items);
-        app.project_grouping = false;
+        app.prune.project_grouping = false;
         app.apply_filter();
 
-        assert!(app.group_separators.is_empty());
-    }
-
-    #[test]
-    fn test_project_grouping_sorted_by_name() {
-        let mut items = vec![
-            make_result("node_modules", "/projects/zebra/node_modules", 500),
-            make_result("node_modules", "/projects/alpha/node_modules", 100),
-        ];
-        items[0].git_root = Some(PathBuf::from("/projects/zebra"));
-        items[1].git_root = Some(PathBuf::from("/projects/alpha"));
-
-        let mut app = make_test_app(items);
-        app.sort_mode = SortMode::Name;
-        app.project_grouping = true;
-        app.apply_filter();
-
-        // Groups should be sorted alphabetically: alpha first, then zebra
-        let real: Vec<usize> = (0..app.filtered_indices.len())
-            .filter(|i| !app.group_separators.contains(i))
-            .map(|i| app.filtered_indices[i])
-            .collect();
-        assert!(app.items[real[0]].path.to_string_lossy().contains("alpha"));
-        assert!(app.items[real[1]].path.to_string_lossy().contains("zebra"));
+        assert!(app.prune.group_separators.is_empty());
     }
 
     #[test]
@@ -1220,35 +1258,36 @@ mod tests {
         items[2].git_root = Some(PathBuf::from("/projects/other"));
 
         let mut app = make_test_app(items);
-        app.project_grouping = true;
+        app.prune.project_grouping = true;
         app.apply_filter();
 
         // Cursor on first separator (position 0)
-        app.list_state.select(Some(0));
-        assert!(app.group_separators.contains(&0));
+        app.prune.list_state.select(Some(0));
+        assert!(app.prune.group_separators.contains(&0));
 
         // Toggle selects all items in the first group
         app.toggle_selection();
 
-        let group_items: Vec<usize> = (1..app.filtered_indices.len())
-            .take_while(|i| !app.group_separators.contains(i))
-            .map(|i| app.filtered_indices[i])
+        let group_items: Vec<usize> = (1..app.prune.filtered_indices.len())
+            .take_while(|i| !app.prune.group_separators.contains(i))
+            .map(|i| app.prune.filtered_indices[i])
             .collect();
-        assert!(group_items.iter().all(|&i| app.selected[i]));
+        assert!(group_items.iter().all(|&i| app.prune.selected[i]));
 
         // Second group items should NOT be selected
-        let second_group_item = app.filtered_indices[app.filtered_indices.len() - 1];
-        assert!(!app.selected[second_group_item]);
+        let second_group_item = app.prune.filtered_indices[app.prune.filtered_indices.len() - 1];
+        assert!(!app.prune.selected[second_group_item]);
 
         // Toggle again deselects all items in the group
         app.toggle_selection();
-        assert!(group_items.iter().all(|&i| !app.selected[i]));
+        assert!(group_items.iter().all(|&i| !app.prune.selected[i]));
     }
 
     #[test]
     fn test_poll_scan_results_streaming() {
         let (tx, rx) = mpsc::channel();
-        let mut app = App::new(rx);
+        let config = Config::load(None).unwrap();
+        let mut app = App::new(rx, config);
 
         tx.send(ScanMessage::Found(ScanResult {
             path: PathBuf::from("/a/node_modules"),
@@ -1273,13 +1312,37 @@ mod tests {
 
         app.poll_scan_results();
 
-        assert_eq!(app.items.len(), 2);
-        assert_eq!(app.items[0].size, 500);
-        assert_eq!(app.items[1].size, 200);
-        assert_eq!(app.path_index_map.len(), 2);
-        assert!(app.scan_complete);
+        assert_eq!(app.prune.items.len(), 2);
+        assert_eq!(app.prune.items[0].size, 500);
+        assert_eq!(app.prune.items[1].size, 200);
+        assert_eq!(app.prune.path_index_map.len(), 2);
+        assert!(app.prune.scan_complete);
         // Sorted by size desc after Complete triggered apply_filter
-        assert_eq!(app.items[app.filtered_indices[0]].size, 500);
-        assert_eq!(app.items[app.filtered_indices[1]].size, 200);
+        assert_eq!(app.prune.items[app.prune.filtered_indices[0]].size, 500);
+        assert_eq!(app.prune.items[app.prune.filtered_indices[1]].size, 200);
+    }
+
+    #[test]
+    fn test_project_grouping_sorted_by_name() {
+        let mut items = vec![
+            make_result("node_modules", "/projects/zebra/node_modules", 500),
+            make_result("node_modules", "/projects/alpha/node_modules", 100),
+        ];
+        items[0].git_root = Some(PathBuf::from("/projects/zebra"));
+        items[1].git_root = Some(PathBuf::from("/projects/alpha"));
+
+        let mut app = make_test_app(items);
+        app.prune.sort_mode = SortMode::Name;
+        app.prune.project_grouping = true;
+        app.apply_filter();
+
+        // alpha group first, then zebra
+        assert_eq!(app.prune.group_separators.len(), 2);
+        let real: Vec<usize> = (0..app.prune.filtered_indices.len())
+            .filter(|i| !app.prune.group_separators.contains(i))
+            .map(|i| app.prune.filtered_indices[i])
+            .collect();
+        assert_eq!(app.prune.items[real[0]].size, 100); // alpha
+        assert_eq!(app.prune.items[real[1]].size, 500); // zebra
     }
 }
