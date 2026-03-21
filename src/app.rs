@@ -1247,6 +1247,82 @@ mod tests {
     }
 
     #[test]
+    fn test_toggle_selection_on_separator_selects_group() {
+        let mut items = vec![
+            make_result("node_modules", "/projects/my-app/node_modules", 100),
+            make_result("Pods", "/projects/my-app/ios/Pods", 500),
+            make_result("node_modules", "/projects/other/node_modules", 200),
+        ];
+        items[0].git_root = Some(PathBuf::from("/projects/my-app"));
+        items[1].git_root = Some(PathBuf::from("/projects/my-app"));
+        items[2].git_root = Some(PathBuf::from("/projects/other"));
+
+        let mut app = make_test_app(items);
+        app.prune.project_grouping = true;
+        app.apply_filter();
+
+        // Cursor on first separator (position 0)
+        app.prune.list_state.select(Some(0));
+        assert!(app.prune.group_separators.contains(&0));
+
+        // Toggle selects all items in the first group
+        app.toggle_selection();
+
+        let group_items: Vec<usize> = (1..app.prune.filtered_indices.len())
+            .take_while(|i| !app.prune.group_separators.contains(i))
+            .map(|i| app.prune.filtered_indices[i])
+            .collect();
+        assert!(group_items.iter().all(|&i| app.prune.selected[i]));
+
+        // Second group items should NOT be selected
+        let second_group_item = app.prune.filtered_indices[app.prune.filtered_indices.len() - 1];
+        assert!(!app.prune.selected[second_group_item]);
+
+        // Toggle again deselects all items in the group
+        app.toggle_selection();
+        assert!(group_items.iter().all(|&i| !app.prune.selected[i]));
+    }
+
+    #[test]
+    fn test_poll_scan_results_streaming() {
+        let (tx, rx) = mpsc::channel();
+        let config = Config::load(None).unwrap();
+        let mut app = App::new(rx, config);
+
+        tx.send(ScanMessage::Found(ScanResult {
+            path: PathBuf::from("/a/node_modules"),
+            target_name: "node_modules".to_string(),
+            size: 500,
+            last_modified: None,
+            file_count: 10,
+            git_root: None,
+        }))
+        .unwrap();
+        tx.send(ScanMessage::Found(ScanResult {
+            path: PathBuf::from("/b/node_modules"),
+            target_name: "node_modules".to_string(),
+            size: 200,
+            last_modified: None,
+            file_count: 5,
+            git_root: None,
+        }))
+        .unwrap();
+        tx.send(ScanMessage::Complete).unwrap();
+        drop(tx);
+
+        app.poll_scan_results();
+
+        assert_eq!(app.prune.items.len(), 2);
+        assert_eq!(app.prune.items[0].size, 500);
+        assert_eq!(app.prune.items[1].size, 200);
+        assert_eq!(app.prune.path_index_map.len(), 2);
+        assert!(app.prune.scan_complete);
+        // Sorted by size desc after Complete triggered apply_filter
+        assert_eq!(app.prune.items[app.prune.filtered_indices[0]].size, 500);
+        assert_eq!(app.prune.items[app.prune.filtered_indices[1]].size, 200);
+    }
+
+    #[test]
     fn test_project_grouping_sorted_by_name() {
         let mut items = vec![
             make_result("node_modules", "/projects/zebra/node_modules", 500),

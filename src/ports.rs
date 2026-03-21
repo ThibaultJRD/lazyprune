@@ -76,6 +76,7 @@ pub struct PortsState {
     pub dev_filter_active: bool,
     pub dev_filter_ports: HashSet<u16>,
     pub scan_complete: bool,
+    pub scan_tick: u8,
     pub scan_rx: Option<mpsc::Receiver<PortScanMessage>>,
     pub kill_rx: Option<mpsc::Receiver<KillMessage>>,
     pub kill_progress: usize,
@@ -100,6 +101,7 @@ impl PortsState {
             dev_filter_active: false,
             dev_filter_ports: HashSet::new(),
             scan_complete: false,
+            scan_tick: 0,
             scan_rx: None,
             kill_rx: None,
             kill_progress: 0,
@@ -419,13 +421,23 @@ pub fn kill_ports(targets: Vec<PortInfo>, tx: mpsc::Sender<KillMessage>) {
 
         // Check if still alive
         let still_alive = signal::kill(nix_pid, None).is_ok();
-        if still_alive && verify_process(target.pid, &target.process_name) {
-            // Process is still alive and is indeed the expected process — use SIGKILL
-            if let Err(e) = signal::kill(nix_pid, Signal::SIGKILL) {
+        if still_alive {
+            if verify_process(target.pid, &target.process_name) {
+                // Process is still alive and is indeed the expected process — use SIGKILL
+                if let Err(e) = signal::kill(nix_pid, Signal::SIGKILL) {
+                    let _ = tx.send(KillMessage::Error {
+                        port: target.port,
+                        pid: target.pid,
+                        error: format!("SIGKILL failed: {e}"),
+                    });
+                    continue;
+                }
+            } else {
+                // PID is alive but belongs to a different process — cannot safely kill
                 let _ = tx.send(KillMessage::Error {
                     port: target.port,
                     pid: target.pid,
-                    error: format!("SIGKILL failed: {e}"),
+                    error: "Process survived SIGTERM but PID was reused".to_string(),
                 });
                 continue;
             }
@@ -877,6 +889,87 @@ mod tests {
     }
 
     // ── Kill tests ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_ports_state_has_own_scan_tick() {
+        let mut state = PortsState::new();
+        assert_eq!(state.scan_tick, 0);
+        state.scan_tick = state.scan_tick.wrapping_add(1);
+        assert_eq!(state.scan_tick, 1);
+        // Verify wrapping at u8 boundary
+        state.scan_tick = 255;
+        state.scan_tick = state.scan_tick.wrapping_add(1);
+        assert_eq!(state.scan_tick, 0);
+    }
+
+    #[test]
+    fn test_ports_state_select_all() {
+        let mut state = PortsState::new();
+        state.items = vec![
+            make_port_info(3000, "node"),
+            make_port_info(3001, "node"),
+            make_port_info(8080, "java"),
+        ];
+        state.selected = vec![false; 3];
+        state.apply_filter();
+        state.select_all();
+        assert_eq!(state.selected_count(), 3);
+    }
+
+    #[test]
+    fn test_ports_state_invert_selection() {
+        let mut state = PortsState::new();
+        state.items = vec![make_port_info(3000, "node"), make_port_info(3001, "node")];
+        state.selected = vec![true, false];
+        state.apply_filter();
+        state.invert_selection();
+        assert!(!state.selected[0]);
+        assert!(state.selected[1]);
+    }
+
+    #[test]
+    fn test_ports_state_navigation() {
+        let mut state = PortsState::new();
+        state.items = vec![
+            make_port_info(3000, "node"),
+            make_port_info(3001, "node"),
+            make_port_info(3002, "node"),
+        ];
+        state.selected = vec![false; 3];
+        state.apply_filter();
+
+        assert_eq!(state.list_state.selected(), Some(0));
+        state.next();
+        assert_eq!(state.list_state.selected(), Some(1));
+        state.next();
+        assert_eq!(state.list_state.selected(), Some(2));
+        // Should clamp at the end
+        state.next();
+        assert_eq!(state.list_state.selected(), Some(2));
+
+        state.previous();
+        assert_eq!(state.list_state.selected(), Some(1));
+        state.go_top();
+        assert_eq!(state.list_state.selected(), Some(0));
+        state.go_bottom();
+        assert_eq!(state.list_state.selected(), Some(2));
+    }
+
+    #[test]
+    fn test_ports_state_cycle_sort() {
+        let mut state = PortsState::new();
+        assert_eq!(state.sort_mode, PortsSortMode::PortAsc);
+        state.items = vec![make_port_info(3000, "node")];
+        state.selected = vec![false];
+        state.cycle_sort();
+        assert_eq!(state.sort_mode, PortsSortMode::PortDesc);
+        state.cycle_sort();
+        assert_eq!(state.sort_mode, PortsSortMode::ProcessName);
+        state.cycle_sort();
+        assert_eq!(state.sort_mode, PortsSortMode::PidAsc);
+        state.cycle_sort();
+        assert_eq!(state.sort_mode, PortsSortMode::PortAsc);
+    }
 
     #[test]
     fn test_kill_message_types() {

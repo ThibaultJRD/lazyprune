@@ -238,7 +238,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                 if let Some(ref mut ports) = app.ports {
                     ports.poll_scan_results();
                     if !ports.scan_complete {
-                        app.prune.scan_tick = app.prune.scan_tick.wrapping_add(1);
+                        ports.scan_tick = ports.scan_tick.wrapping_add(1);
                     }
                 }
             }
@@ -284,6 +284,23 @@ fn handle_prune_key(app: &mut App, key: KeyEvent) {
 }
 
 fn switch_tool(app: &mut App, tool: Tool) {
+    // Clear any active filter on the tool we're leaving
+    match app.active_tool {
+        Tool::Prune => {
+            if !app.prune.filter_text.is_empty() {
+                app.prune.filter_text.clear();
+                app.apply_filter();
+            }
+        }
+        Tool::Ports => {
+            if let Some(ref mut ports) = app.ports {
+                if !ports.filter_text.is_empty() {
+                    ports.filter_text.clear();
+                    ports.apply_filter();
+                }
+            }
+        }
+    }
     app.active_tool = tool;
     app.mode = AppMode::Normal;
     app.focus = app::FocusPanel::List;
@@ -631,8 +648,8 @@ fn handle_ports_confirm_key(app: &mut App, code: KeyCode) {
         KeyCode::Enter => {
             if let Some(ref mut ports) = app.ports {
                 ports.start_killing();
+                app.mode = AppMode::Processing;
             }
-            app.mode = AppMode::Processing;
         }
         KeyCode::Esc => {
             app.mode = AppMode::Normal;

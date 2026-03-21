@@ -119,7 +119,7 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             ));
 
             if !ports.scan_complete {
-                let spinner = SPINNER_FRAMES[(app.prune.scan_tick as usize) % SPINNER_FRAMES.len()];
+                let spinner = SPINNER_FRAMES[(ports.scan_tick as usize) % SPINNER_FRAMES.len()];
                 spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
                 spans.push(Span::styled(
                     format!("{spinner} Scanning..."),
