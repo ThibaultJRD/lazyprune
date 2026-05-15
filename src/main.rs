@@ -158,7 +158,7 @@ fn main() -> io::Result<()> {
                 _ => {}
             }
         }
-        results.sort_by(|a, b| b.size.cmp(&a.size));
+        results.sort_by_key(|r| std::cmp::Reverse(r.size));
         for result in &results {
             println!(
                 "{}\t{}\t{}",
@@ -322,16 +322,12 @@ fn handle_prune_normal_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers
         KeyCode::Char('s') => app.cycle_sort(),
         KeyCode::Char('p') => app.toggle_project_grouping(),
         KeyCode::Char('/') => app.mode = AppMode::Filter,
-        KeyCode::Char('t') => {
-            if !app.prune.available_types.is_empty() {
-                app.prune.type_filter_cursor = 0;
-                app.mode = AppMode::SubFilter;
-            }
+        KeyCode::Char('t') if !app.prune.available_types.is_empty() => {
+            app.prune.type_filter_cursor = 0;
+            app.mode = AppMode::SubFilter;
         }
-        KeyCode::Char('d') => {
-            if app.selected_count() > 0 {
-                app.mode = AppMode::Confirm;
-            }
+        KeyCode::Char('d') if app.selected_count() > 0 => {
+            app.mode = AppMode::Confirm;
         }
         KeyCode::Tab => {
             let next = match app.active_tool {
@@ -407,11 +403,9 @@ fn handle_prune_sub_filter_key(app: &mut App, code: KeyCode) {
         KeyCode::Esc | KeyCode::Char('t') => {
             app.mode = AppMode::Normal;
         }
-        KeyCode::Char('j') | KeyCode::Down => {
-            if !app.prune.available_types.is_empty() {
-                let max = app.prune.available_types.len();
-                app.prune.type_filter_cursor = (app.prune.type_filter_cursor + 1).min(max);
-            }
+        KeyCode::Char('j') | KeyCode::Down if !app.prune.available_types.is_empty() => {
+            let max = app.prune.available_types.len();
+            app.prune.type_filter_cursor = (app.prune.type_filter_cursor + 1).min(max);
         }
         KeyCode::Char('k') | KeyCode::Up => {
             app.prune.type_filter_cursor = app.prune.type_filter_cursor.saturating_sub(1);
@@ -565,10 +559,10 @@ fn handle_ports_normal_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers
                 }
             }
         }
-        KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
-            if app.ports.as_ref().and_then(|p| p.current_item()).is_some() {
-                app.focus = app::FocusPanel::Details;
-            }
+        KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter
+            if app.ports.as_ref().and_then(|p| p.current_item()).is_some() =>
+        {
+            app.focus = app::FocusPanel::Details;
         }
         KeyCode::Tab => {
             let next = match app.active_tool {

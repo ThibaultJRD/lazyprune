@@ -826,7 +826,7 @@ impl App {
             });
         }
 
-        dir_sizes.sort_by(|a, b| b.1.cmp(&a.1));
+        dir_sizes.sort_by_key(|d| std::cmp::Reverse(d.1));
         dir_sizes.truncate(3);
 
         let project_type = detect_project_type(path.parent().unwrap_or(path));
