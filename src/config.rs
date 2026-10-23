@@ -96,11 +96,11 @@ impl Config {
 
     /// Resolve root path (expand ~)
     pub fn root_path(&self) -> PathBuf {
-        if self.root.starts_with('~')
+        if let Some(rest) = self.root.strip_prefix('~')
+            && (rest.is_empty() || rest.starts_with('/'))
             && let Some(home) = dirs::home_dir()
         {
-            let rest = self.root.get(2..).unwrap_or("");
-            return home.join(rest);
+            return home.join(rest.trim_start_matches('/'));
         }
         PathBuf::from(&self.root)
     }
@@ -201,6 +201,20 @@ mod tests {
         let path = config.root_path();
         assert!(!path.to_string_lossy().contains('~'));
         assert!(path.is_absolute());
+    }
+
+    #[test]
+    fn test_root_path_only_expands_home_tilde() {
+        let home = dirs::home_dir().unwrap();
+        let root = |r: &str| {
+            let mut config = Config::load(None).unwrap();
+            config.root = r.to_string();
+            config.root_path()
+        };
+        assert_eq!(root("~"), home);
+        assert_eq!(root("~/Projects"), home.join("Projects"));
+        // Not a home reference: kept as is
+        assert_eq!(root("~foo"), PathBuf::from("~foo"));
     }
 
     #[test]
