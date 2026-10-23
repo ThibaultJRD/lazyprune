@@ -751,6 +751,236 @@ mod tests {
         assert!(result.is_err());
     }
 
+    use app::FocusPanel;
+    use ports::{PortInfo, PortsState, Protocol};
+
+    fn press(app: &mut App, code: KeyCode) {
+        handle_key(app, KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    /// App with two prune items and two ports, no background scans running.
+    fn test_app(tool: Tool) -> App {
+        let (_tx, rx) = mpsc::channel();
+        let mut app = App::new(rx, Config::load(None).unwrap());
+        app.prune.items = ["/a/node_modules", "/b/node_modules"]
+            .iter()
+            .map(|p| scanner::ScanResult {
+                path: PathBuf::from(p),
+                target_name: "node_modules".into(),
+                size: 1,
+                shared_size: 0,
+                last_modified: None,
+                file_count: 1,
+                git_root: None,
+            })
+            .collect();
+        app.prune.selected = vec![false; 2];
+        app.prune.available_types = vec!["node_modules".into()];
+        app.apply_filter();
+
+        let mut ports = PortsState::new();
+        ports.items = [(3000, 1), (3001, 2)]
+            .iter()
+            .map(|&(port, pid)| PortInfo {
+                port,
+                protocol: Protocol::Tcp,
+                pid,
+                process_name: "node".into(),
+                command: String::new(),
+                user: "me".into(),
+                state: "LISTEN".into(),
+                connections: 0,
+            })
+            .collect();
+        ports.selected = vec![false; 2];
+        ports.scan_complete = true;
+        ports.apply_filter();
+        app.ports = Some(ports);
+        app.active_tool = tool;
+        app
+    }
+
+    #[test]
+    fn test_tool_switch_keys_from_every_panel() {
+        for tool in [Tool::Prune, Tool::Ports] {
+            for focus in [FocusPanel::List, FocusPanel::Details] {
+                for (code, expected) in [
+                    (
+                        KeyCode::Tab,
+                        if tool == Tool::Prune {
+                            Tool::Ports
+                        } else {
+                            Tool::Prune
+                        },
+                    ),
+                    (KeyCode::Char('1'), Tool::Prune),
+                    (KeyCode::Char('2'), Tool::Ports),
+                ] {
+                    let mut app = test_app(tool);
+                    app.focus = focus;
+                    press(&mut app, code);
+                    assert_eq!(app.active_tool, expected, "{tool:?} {focus:?} {code:?}");
+                    assert_eq!(app.focus, FocusPanel::List);
+                    assert_eq!(app.mode, AppMode::Normal);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_quit_and_back_keys() {
+        for tool in [Tool::Prune, Tool::Ports] {
+            for focus in [FocusPanel::List, FocusPanel::Details] {
+                let mut app = test_app(tool);
+                app.focus = focus;
+                press(&mut app, KeyCode::Char('q'));
+                assert!(app.exit, "q quits ({tool:?} {focus:?})");
+            }
+            let mut app = test_app(tool);
+            press(&mut app, KeyCode::Esc);
+            assert!(app.exit, "Esc quits from the list ({tool:?})");
+            for back in [KeyCode::Esc, KeyCode::Char('h'), KeyCode::Left] {
+                let mut app = test_app(tool);
+                app.focus = FocusPanel::Details;
+                press(&mut app, back);
+                assert!(!app.exit);
+                assert_eq!(app.focus, FocusPanel::List, "{tool:?} {back:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_ports_list_keys() {
+        let mut app = test_app(Tool::Ports);
+        let cursor = |app: &App| app.ports.as_ref().unwrap().list_state.selected();
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(cursor(&app), Some(1));
+        press(&mut app, KeyCode::Char('g'));
+        assert_eq!(cursor(&app), Some(0));
+        press(&mut app, KeyCode::Char('G'));
+        assert_eq!(cursor(&app), Some(1));
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(cursor(&app), Some(0));
+
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.mode, AppMode::Normal, "d needs a selection");
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.ports.as_ref().unwrap().selected, vec![true, false]);
+        press(&mut app, KeyCode::Char('v'));
+        assert_eq!(app.ports.as_ref().unwrap().selected, vec![false, true]);
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(app.ports.as_ref().unwrap().selected, vec![true, true]);
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.mode, AppMode::Confirm);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, AppMode::Normal);
+
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(
+            app.ports.as_ref().unwrap().sort_mode,
+            ports::PortsSortMode::PortDesc
+        );
+
+        press(&mut app, KeyCode::Char('t'));
+        assert_eq!(app.mode, AppMode::SubFilter);
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode, AppMode::Normal);
+        assert_eq!(
+            app.ports.as_ref().unwrap().protocol_filter,
+            Some(Protocol::Tcp)
+        );
+
+        press(&mut app, KeyCode::Char('/'));
+        assert_eq!(app.mode, AppMode::Filter);
+        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('0'));
+        press(&mut app, KeyCode::Char('0'));
+        press(&mut app, KeyCode::Char('1'));
+        assert_eq!(app.ports.as_ref().unwrap().filter_text, "3001");
+        assert_eq!(app.ports.as_ref().unwrap().filtered_indices.len(), 1);
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(app.ports.as_ref().unwrap().filter_text, "300");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, AppMode::Normal);
+        assert_eq!(app.ports.as_ref().unwrap().filter_text, "");
+
+        press(&mut app, KeyCode::Char('?'));
+        assert_eq!(app.mode, AppMode::Help);
+        press(&mut app, KeyCode::Char('q'));
+        assert_eq!(app.mode, AppMode::Normal);
+        assert!(!app.exit, "q closes help");
+
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.focus, FocusPanel::Details);
+    }
+
+    #[test]
+    fn test_ports_rescan_keys() {
+        let mut app = test_app(Tool::Ports);
+        press(&mut app, KeyCode::Char('r'));
+        assert!(!app.ports.as_ref().unwrap().scan_complete);
+        let before = app.ports.as_ref().unwrap().dev_filter_active;
+        press(&mut app, KeyCode::Char('a'));
+        assert_eq!(app.ports.as_ref().unwrap().dev_filter_active, !before);
+    }
+
+    #[test]
+    fn test_prune_list_keys() {
+        let mut app = test_app(Tool::Prune);
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.mode, AppMode::Normal, "d needs a selection");
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.mode, AppMode::Confirm);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, AppMode::Normal);
+
+        press(&mut app, KeyCode::Char('t'));
+        assert_eq!(app.mode, AppMode::SubFilter);
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.prune.type_filter.as_deref(), Some("node_modules"));
+        press(&mut app, KeyCode::Char('t'));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.prune.type_filter, None);
+
+        press(&mut app, KeyCode::Char('p'));
+        assert!(app.prune.project_grouping);
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.prune.sort_mode, app::SortMode::SizeAsc);
+
+        press(&mut app, KeyCode::Char('/'));
+        press(&mut app, KeyCode::Char('b'));
+        press(&mut app, KeyCode::Char('/'));
+        assert_eq!(app.prune.filter_text, "b/");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode, AppMode::Normal);
+        assert_eq!(app.prune.filter_text, "b/", "Enter keeps the filter");
+
+        press(&mut app, KeyCode::Char('?'));
+        assert_eq!(app.mode, AppMode::Help);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, AppMode::Normal);
+
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.focus, FocusPanel::Details);
+    }
+
+    #[test]
+    fn test_errors_popup_keys() {
+        for code in [KeyCode::Enter, KeyCode::Esc, KeyCode::Char('q')] {
+            let mut app = test_app(Tool::Prune);
+            app.mode = AppMode::Errors;
+            press(&mut app, code);
+            assert_eq!(app.mode, AppMode::Normal, "{code:?}");
+            assert!(!app.exit);
+        }
+    }
+
     #[test]
     fn test_ctrl_c_quits_from_any_mode() {
         let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
