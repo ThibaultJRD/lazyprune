@@ -232,6 +232,10 @@ impl App {
                         let item = &self.prune.items[idx];
                         if self.item_passes_filter(item) {
                             self.prune.filtered_indices.push(idx);
+                            // ratatui clears the selection while the list is empty
+                            if self.prune.list_state.selected().is_none() {
+                                self.prune.list_state.select(Some(0));
+                            }
                         }
                     }
                     ScanMessage::Complete => {
@@ -745,12 +749,10 @@ impl App {
         if self.prune.filtered_indices.is_empty() {
             self.prune.list_state.select(Some(0));
         } else {
+            // Also restores a selection ratatui cleared while the list was empty
             let current = self.prune.list_state.selected().unwrap_or(0);
-            if current >= self.prune.filtered_indices.len() {
-                self.prune
-                    .list_state
-                    .select(Some(self.prune.filtered_indices.len() - 1));
-            }
+            let last = self.prune.filtered_indices.len() - 1;
+            self.prune.list_state.select(Some(current.min(last)));
         }
     }
 
@@ -1032,6 +1034,26 @@ mod tests {
             file_count: 0,
             git_root: None,
         }
+    }
+
+    #[test]
+    fn test_first_item_selected_once_results_arrive() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(rx, Config::load(None).unwrap());
+        // The first frame is drawn before the scan finds anything
+        let backend = ratatui::backend::TestBackend::new(80, 20);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+
+        for path in ["/a/node_modules", "/b/node_modules"] {
+            let result = make_result("node_modules", path, 1);
+            tx.send(ScanMessage::Found(result)).unwrap();
+        }
+        app.poll_scan_results();
+        let current = |app: &App| app.current_item().map(|i| i.path.clone());
+        assert_eq!(current(&app), Some(PathBuf::from("/a/node_modules")));
+        app.next();
+        assert_eq!(current(&app), Some(PathBuf::from("/b/node_modules")));
     }
 
     #[test]

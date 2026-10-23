@@ -221,11 +221,10 @@ impl PortsState {
         if self.filtered_indices.is_empty() {
             self.list_state.select(Some(0));
         } else {
+            // Also restores a selection ratatui cleared while the list was empty
             let current = self.list_state.selected().unwrap_or(0);
-            if current >= self.filtered_indices.len() {
-                self.list_state
-                    .select(Some(self.filtered_indices.len() - 1));
-            }
+            let last = self.filtered_indices.len() - 1;
+            self.list_state.select(Some(current.min(last)));
         }
     }
 
@@ -948,6 +947,17 @@ mod tests {
         state.poll_scan_results();
         assert!(state.scan_complete);
         assert_eq!(state.scan_error.as_deref(), Some("lsof failed: not found"));
+    }
+
+    #[test]
+    fn test_ports_first_item_selected_after_empty_render() {
+        let mut state = PortsState::new();
+        // ratatui's List clears the selection when it renders an empty list
+        state.list_state.select(None);
+        state.items = vec![make_port_info(3000, "node"), make_port_info(3001, "node")];
+        state.selected = vec![false; 2];
+        state.apply_filter();
+        assert_eq!(state.current_item().map(|p| p.port), Some(3000));
     }
 
     #[test]
