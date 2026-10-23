@@ -518,6 +518,29 @@ pub fn parse_port_from_name(name: &str) -> Option<(u16, String)> {
     Some((port, state))
 }
 
+/// Decodes the `\xNN` escapes lsof uses for spaces and non-printable bytes.
+fn unescape_lsof(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\'
+            && bytes.get(i + 1) == Some(&b'x')
+            && let (Some(hi), Some(lo)) = (
+                bytes.get(i + 2).and_then(|b| (*b as char).to_digit(16)),
+                bytes.get(i + 3).and_then(|b| (*b as char).to_digit(16)),
+            )
+        {
+            out.push((hi * 16 + lo) as u8);
+            i += 4;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Parses one line of `lsof -i -n -P +c 0` output into a `PortEntry`.
 ///
 /// Expected columns (whitespace-separated):
@@ -527,7 +550,7 @@ pub fn parse_port_from_name(name: &str) -> Option<(u16, String)> {
 pub fn parse_lsof_line(line: &str) -> Option<PortEntry> {
     let mut fields = line.split_whitespace();
 
-    let process_name = fields.next()?.to_string();
+    let process_name = unescape_lsof(fields.next()?);
 
     // Skip header line
     if process_name == "COMMAND" {
@@ -718,6 +741,18 @@ mod tests {
         assert_eq!(info.port, 5353);
         assert_eq!(info.protocol, Protocol::Udp);
         assert_eq!(info.state, "");
+    }
+
+    #[test]
+    fn test_parse_lsof_unescapes_command() {
+        // lsof prints spaces and non-printable bytes in COMMAND as \xNN
+        let line = r"Browser\x20Helper 49517 me 12u IPv4 0xdef 0t0 UDP *:5353";
+        assert_eq!(
+            parse_lsof_line(line).unwrap().process_name,
+            "Browser Helper"
+        );
+        let line = r"caf\xc3\xa9 1 me 12u IPv4 0xdef 0t0 UDP *:5353";
+        assert_eq!(parse_lsof_line(line).unwrap().process_name, "café");
     }
 
     #[test]
