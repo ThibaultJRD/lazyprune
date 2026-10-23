@@ -59,6 +59,15 @@ pub enum Tool {
     Ports,
 }
 
+impl Tool {
+    pub fn other(self) -> Self {
+        match self {
+            Tool::Prune => Tool::Ports,
+            Tool::Ports => Tool::Prune,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FocusPanel {
     List,
@@ -575,6 +584,14 @@ impl App {
         }
 
         self.apply_filter();
+    }
+
+    /// Start killing the selected ports' processes.
+    pub fn start_killing(&mut self) {
+        if let Some(ports) = self.ports.as_mut() {
+            ports.start_killing();
+            self.mode = AppMode::Processing;
+        }
     }
 
     /// Poll the ports kill channel and leave Processing mode once done.

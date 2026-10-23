@@ -123,6 +123,14 @@ impl PortsState {
         std::thread::spawn(move || scan_ports(tx, dev_filter));
     }
 
+    /// Restart the scan, keeping the current dev filter.
+    pub fn rescan(&mut self) {
+        let filter = self
+            .dev_filter_active
+            .then(|| self.dev_filter_ports.clone());
+        self.start_scan(filter);
+    }
+
     /// Drain the scan channel non-blocking.
     pub fn poll_scan_results(&mut self) {
         let rx = match self.scan_rx.as_ref() {
@@ -356,13 +364,8 @@ impl PortsState {
                     }
                     KillMessage::Complete => {
                         self.kill_rx = None;
-                        // Trigger a rescan to reflect the killed processes
-                        let filter = if self.dev_filter_active {
-                            Some(self.dev_filter_ports.clone())
-                        } else {
-                            None
-                        };
-                        self.start_scan(filter);
+                        // Rescan to reflect the killed processes
+                        self.rescan();
                         return true;
                     }
                 },
