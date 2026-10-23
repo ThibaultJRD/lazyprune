@@ -614,26 +614,12 @@ impl App {
 
     /// Rebuild filtered_indices: filter, sort, and optionally group.
     pub fn apply_filter(&mut self) {
-        let filter_lower = self.prune.filter_text.to_lowercase();
         let mut base_indices: Vec<usize> = self
             .prune
             .items
             .iter()
             .enumerate()
-            .filter(|(_, item)| {
-                if !filter_lower.is_empty() {
-                    let path_str = item.path.to_string_lossy().to_lowercase();
-                    if !path_str.contains(&filter_lower) {
-                        return false;
-                    }
-                }
-                if let Some(ref tf) = self.prune.type_filter
-                    && item.target_name != *tf
-                {
-                    return false;
-                }
-                true
-            })
+            .filter(|(_, item)| self.item_passes_filter(item))
             .map(|(i, _)| i)
             .collect();
 
