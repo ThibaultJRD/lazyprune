@@ -1,6 +1,6 @@
 use std::time::SystemTime;
 
-use crate::app::App;
+use crate::app::{App, Row};
 use crate::{format_duration, format_size};
 use ratatui::{
     Frame,
@@ -42,19 +42,14 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let items: Vec<ListItem> = app
         .prune
-        .filtered_indices
+        .rows
         .iter()
         .enumerate()
-        .map(|(pos, &idx)| {
-            // Render separator line
-            if app.prune.group_separators.contains(&pos) {
-                let next_idx = app
-                    .prune
-                    .filtered_indices
-                    .iter()
-                    .skip(pos + 1)
-                    .find(|&&i| i != usize::MAX);
-                let (label, group_size) = match next_idx {
+        .map(|(pos, &row)| {
+            let Row::Item(idx) = row else {
+                // Project header
+                let members = Row::group_members(&app.prune.rows, pos);
+                let (label, group_size) = match members.first() {
                     Some(&item_idx) => {
                         let item = &app.prune.items[item_idx];
                         let project_label = item
@@ -65,24 +60,18 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| shorten_path(item.path.parent()));
 
-                        let mut size = 0u64;
-                        let mut count = 0usize;
-                        for i in (pos + 1)..app.prune.filtered_indices.len() {
-                            if app.prune.group_separators.contains(&i) {
-                                break;
-                            }
-                            let gi = app.prune.filtered_indices[i];
-                            size += app.prune.items[gi].size;
-                            count += 1;
-                        }
+                        let size: u64 = members.iter().map(|&i| app.prune.items[i].size).sum();
                         let size_label = crate::format_size(size);
-                        (project_label, format!("{} targets, {}", count, size_label))
+                        (
+                            project_label,
+                            format!("{} targets, {}", members.len(), size_label),
+                        )
                     }
                     None => ("?".to_string(), String::new()),
                 };
                 let sep_text = format!("── {} ({}) ──", label, group_size);
                 return ListItem::new(Line::styled(sep_text, Style::default().fg(Color::Cyan)));
-            }
+            };
 
             let item = &app.prune.items[idx];
             let is_selected = app.prune.selected[idx];
@@ -146,7 +135,12 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
 
-    let item_count = app.prune.filtered_indices.len() - app.prune.group_separators.len();
+    let item_count = app
+        .prune
+        .rows
+        .iter()
+        .filter(|row| matches!(row, Row::Item(_)))
+        .count();
     let title = format!(" {} items ", item_count);
     let border_color = if app.focus == crate::app::FocusPanel::List {
         Color::Cyan
