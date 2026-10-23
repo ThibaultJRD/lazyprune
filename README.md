@@ -99,8 +99,8 @@ dev_filter = ["3000-3009", "4000-4009", "5173-5174", "8080-8090"]
 ```
 
 **Targets** have:
-- `dirs` -- directory names to look for
-- `indicator` (optional) -- a file that must exist in the parent to confirm it's a real target
+- `dirs` -- directory names to look for (nested paths like `.yarn/cache` work too)
+- `indicator` (optional) -- a file, or a list of files, one of which must exist in the project dir to confirm it's a real target
 
 Default targets: `node_modules`, `Pods`, `.gradle`/`build`, `.pnpm-store`, `.yarn/cache`, `.next`, `.nuxt`, `target` (Rust), `dist`.
 

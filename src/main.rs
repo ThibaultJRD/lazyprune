@@ -85,7 +85,7 @@ fn main() -> io::Result<()> {
             .map(|d| Target {
                 name: d.clone(),
                 dirs: vec![d.clone()],
-                indicator: None,
+                indicators: vec![],
             })
             .collect()
     } else {

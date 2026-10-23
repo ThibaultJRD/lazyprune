@@ -139,24 +139,12 @@ fn scan_dir<'scope>(path: PathBuf, ctx: &'scope ScanContext, scope: &rayon::Scop
         // Skip hidden dirs that don't match any target (unless --hidden)
         if !ctx.include_hidden
             && name_str.starts_with('.')
-            && !ctx.targets.iter().any(|t| t.matches_dir_name(name_str))
+            && !ctx.targets.iter().any(|t| t.mentions_dir(name_str))
         {
             continue;
         }
 
-        // Check if this dir matches a target
-        // `path` is the parent directory — use it directly for indicator check
-        let matched_target = ctx.targets.iter().find(|t| {
-            if !t.matches_dir_name(name_str) {
-                return false;
-            }
-            if let Some(ref indicator) = t.indicator
-                && !path.join(indicator).exists()
-            {
-                return false;
-            }
-            true
-        });
+        let matched_target = ctx.targets.iter().find(|t| t.matches(&entry_path));
 
         if let Some(target) = matched_target {
             // Found a target — compute stats in this branch (single-pass)
@@ -241,17 +229,17 @@ mod tests {
             Target {
                 name: "node_modules".to_string(),
                 dirs: vec!["node_modules".to_string()],
-                indicator: Some("package.json".to_string()),
+                indicators: vec!["package.json".to_string()],
             },
             Target {
                 name: "Pods".to_string(),
                 dirs: vec!["Pods".to_string()],
-                indicator: Some("Podfile".to_string()),
+                indicators: vec!["Podfile".to_string()],
             },
             Target {
                 name: "Gradle cache".to_string(),
                 dirs: vec!["build".to_string()],
-                indicator: Some("build.gradle".to_string()),
+                indicators: vec!["build.gradle".to_string()],
             },
         ];
 
@@ -279,7 +267,7 @@ mod tests {
         let targets = vec![Target {
             name: "pnpm store".to_string(),
             dirs: vec![".pnpm-store".to_string()],
-            indicator: None,
+            indicators: vec![],
         }];
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -300,7 +288,7 @@ mod tests {
         let targets = vec![Target {
             name: "node_modules".to_string(),
             dirs: vec!["node_modules".to_string()],
-            indicator: Some("package.json".to_string()),
+            indicators: vec!["package.json".to_string()],
         }];
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -339,12 +327,12 @@ mod tests {
             Target {
                 name: "pnpm store".to_string(),
                 dirs: vec![".pnpm-store".to_string()],
-                indicator: None,
+                indicators: vec![],
             },
             Target {
                 name: "node_modules".to_string(),
                 dirs: vec!["node_modules".to_string()],
-                indicator: Some("package.json".to_string()),
+                indicators: vec!["package.json".to_string()],
             },
         ];
 
@@ -416,7 +404,7 @@ mod tests {
         let targets = vec![Target {
             name: "node_modules".to_string(),
             dirs: vec!["node_modules".to_string()],
-            indicator: Some("package.json".to_string()),
+            indicators: vec!["package.json".to_string()],
         }];
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -455,7 +443,7 @@ mod tests {
         let targets = vec![Target {
             name: "src".to_string(),
             dirs: vec!["src".to_string()],
-            indicator: None,
+            indicators: vec![],
         }];
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -478,7 +466,7 @@ mod tests {
         let targets = vec![Target {
             name: ".cache".to_string(),
             dirs: vec![".cache".to_string()],
-            indicator: None,
+            indicators: vec![],
         }];
 
         // Without --hidden: should still find .cache because it matches a target
@@ -512,7 +500,7 @@ mod tests {
         let targets = vec![Target {
             name: "node_modules".to_string(),
             dirs: vec!["node_modules".to_string()],
-            indicator: Some("package.json".to_string()),
+            indicators: vec!["package.json".to_string()],
         }];
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -548,7 +536,7 @@ mod tests {
         let targets = vec![Target {
             name: "node_modules".to_string(),
             dirs: vec!["node_modules".to_string()],
-            indicator: Some("package.json".to_string()),
+            indicators: vec!["package.json".to_string()],
         }];
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -564,5 +552,46 @@ mod tests {
 
         // "share/Steam" != "a/share/Steam", so the target inside should be found
         assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_default_targets_detect_common_layouts() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // (project, indicator file, target dir)
+        let layouts = [
+            ("yarn-app", ".yarnrc.yml", ".yarn/cache"),
+            ("next-app", "next.config.mjs", ".next"),
+            ("nuxt-app", "nuxt.config.js", ".nuxt"),
+            ("kts-app", "build.gradle.kts", "build"),
+        ];
+        for (project, indicator, target_dir) in layouts {
+            fs::create_dir_all(root.join(project).join(target_dir)).unwrap();
+            fs::write(root.join(project).join(indicator), "").unwrap();
+        }
+
+        let targets = crate::config::Config::load(None).unwrap().targets;
+        let (tx, rx) = std::sync::mpsc::channel();
+        scan(root.to_path_buf(), targets, vec![], false, tx);
+
+        let mut found: Vec<(String, String)> = collect_scan_results(rx)
+            .into_iter()
+            .map(|r| {
+                let rel = r.path.strip_prefix(root).unwrap();
+                (rel.to_string_lossy().into_owned(), r.target_name)
+            })
+            .collect();
+        found.sort();
+        let expected = [
+            ("kts-app/build", "Gradle cache"),
+            ("next-app/.next", "Next.js build"),
+            ("nuxt-app/.nuxt", "Nuxt build"),
+            ("yarn-app/.yarn/cache", "Yarn cache"),
+        ];
+        let expected: Vec<(String, String)> = expected
+            .iter()
+            .map(|(p, n)| (p.to_string(), n.to_string()))
+            .collect();
+        assert_eq!(found, expected);
     }
 }

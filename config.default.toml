@@ -34,7 +34,7 @@ indicator = "Podfile"
 [[targets]]
 name = "Gradle cache"
 dirs = [".gradle", "build"]
-indicator = "build.gradle"
+indicator = ["build.gradle", "build.gradle.kts"]
 
 [[targets]]
 name = "pnpm store"
@@ -48,12 +48,12 @@ indicator = ".yarnrc.yml"
 [[targets]]
 name = "Next.js build"
 dirs = [".next"]
-indicator = "next.config.js"
+indicator = ["next.config.js", "next.config.mjs", "next.config.ts"]
 
 [[targets]]
 name = "Nuxt build"
 dirs = [".nuxt"]
-indicator = "nuxt.config.ts"
+indicator = ["nuxt.config.ts", "nuxt.config.js"]
 
 [[targets]]
 name = "Rust target"
