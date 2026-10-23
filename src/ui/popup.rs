@@ -19,9 +19,9 @@ fn popup_area(area: Rect, width: u16, height: u16) -> Rect {
 }
 
 pub fn render_confirm(frame: &mut Frame, app: &App) {
-    let selected = app.selected_items();
+    let selected = app.prune.selected_items();
     let count = selected.len();
-    let size_label = format_size(app.selected_size());
+    let size_label = format_size(app.prune.selected_size());
 
     let title = format!("Delete {} items? ({})", count, size_label);
 
@@ -577,7 +577,7 @@ mod tests {
             git_root: None,
         }];
         app.prune.selected = vec![true];
-        app.apply_filter();
+        app.prune.apply_filter();
         app.mode = AppMode::Confirm;
 
         assert!(render_screen(&mut app, 50, 30).contains("Delete 1 items?"));

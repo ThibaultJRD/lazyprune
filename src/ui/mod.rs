@@ -362,13 +362,13 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         ]),
     };
 
-    let selected = app.selected_count();
+    let selected = app.prune.selected_count();
     let line2 = if selected > 0 {
         Line::from(vec![Span::styled(
             format!(
                 " Selected: {} ({})",
                 selected,
-                format_size(app.selected_size())
+                format_size(app.prune.selected_size())
             ),
             Style::default()
                 .fg(Color::Yellow)

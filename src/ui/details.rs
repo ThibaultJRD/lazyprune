@@ -25,12 +25,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, area);
 
     // Check if we're on a group separator
-    if let Some(group_info) = app.current_group_info() {
+    if let Some(group_info) = app.prune.current_group_info() {
         render_group_details(frame, app, inner, &group_info);
         return;
     }
 
-    let item = match app.current_item() {
+    let item = match app.prune.current_item() {
         Some(item) => item,
         None => {
             let msg = Paragraph::new(Line::styled(
@@ -361,7 +361,7 @@ mod tests {
         }];
         app.prune.selected = vec![false];
         app.prune.project_grouping = grouped;
-        app.apply_filter();
+        app.prune.apply_filter();
 
         let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
         terminal.draw(|f| super::render(f, &app, f.area())).unwrap();
@@ -388,7 +388,7 @@ mod tests {
             git_root: None,
         }];
         app.prune.selected = vec![false];
-        app.apply_filter();
+        app.prune.apply_filter();
 
         let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
         terminal.draw(|f| super::render(f, &app, f.area())).unwrap();

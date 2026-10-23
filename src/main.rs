@@ -197,9 +197,9 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
             (Tool::Prune, true) => app.poll_delete_results(),
             (Tool::Ports, true) => app.poll_kill_results(),
             (Tool::Prune, false) => {
-                app.poll_scan_results();
-                app.poll_tree_results();
-                app.maybe_start_tree_scan();
+                app.prune.poll_scan_results();
+                app.prune.poll_tree_results();
+                app.prune.maybe_start_tree_scan();
                 if !app.prune.scan_complete || app.prune.tree_loading {
                     app.prune.scan_tick = app.prune.scan_tick.wrapping_add(1);
                 }
@@ -275,7 +275,7 @@ fn switch_tool(app: &mut App, tool: Tool) {
         Tool::Prune => {
             if !app.prune.filter_text.is_empty() {
                 app.prune.filter_text.clear();
-                app.apply_filter();
+                app.prune.apply_filter();
             }
         }
         Tool::Ports => {
@@ -322,29 +322,31 @@ fn handle_errors_key(app: &mut App, code: KeyCode) {
 
 fn handle_prune_list_key(app: &mut App, key: KeyEvent) {
     match key.code {
-        KeyCode::Char('j') | KeyCode::Down => app.next(),
-        KeyCode::Char('k') | KeyCode::Up => app.previous(),
-        KeyCode::Char('g') | KeyCode::Home => app.go_top(),
-        KeyCode::Char('G') | KeyCode::End => app.go_bottom(),
-        KeyCode::Char(' ') => app.toggle_selection(),
-        KeyCode::Char('v') => app.invert_selection(),
-        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => app.select_all(),
-        KeyCode::Char('s') => app.cycle_sort(),
-        KeyCode::Char('p') => app.toggle_project_grouping(),
+        KeyCode::Char('j') | KeyCode::Down => app.prune.next(),
+        KeyCode::Char('k') | KeyCode::Up => app.prune.previous(),
+        KeyCode::Char('g') | KeyCode::Home => app.prune.go_top(),
+        KeyCode::Char('G') | KeyCode::End => app.prune.go_bottom(),
+        KeyCode::Char(' ') => app.prune.toggle_selection(),
+        KeyCode::Char('v') => app.prune.invert_selection(),
+        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.prune.select_all()
+        }
+        KeyCode::Char('s') => app.prune.cycle_sort(),
+        KeyCode::Char('p') => app.prune.toggle_project_grouping(),
         KeyCode::Char('/') => app.mode = AppMode::Filter,
         KeyCode::Char('t') if !app.prune.available_types.is_empty() => {
             app.prune.type_filter_cursor = 0;
             app.mode = AppMode::SubFilter;
         }
-        KeyCode::Char('d') if app.selected_count() > 0 => app.mode = AppMode::Confirm,
+        KeyCode::Char('d') if app.prune.selected_count() > 0 => app.mode = AppMode::Confirm,
         KeyCode::Char('?') => app.mode = AppMode::Help,
         KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
-            if app.current_item().is_some() {
+            if app.prune.current_item().is_some() {
                 app.focus = FocusPanel::Details;
-                app.request_tree_scan();
-            } else if app.current_group_info().is_some() {
+                app.prune.request_tree_scan();
+            } else if app.prune.current_group_info().is_some() {
                 app.focus = FocusPanel::Details;
-                app.request_group_tree_scan();
+                app.prune.request_group_tree_scan();
             }
         }
         _ => {}
@@ -353,11 +355,11 @@ fn handle_prune_list_key(app: &mut App, key: KeyEvent) {
 
 fn handle_prune_details_key(app: &mut App, code: KeyCode) {
     match code {
-        KeyCode::Char('j') | KeyCode::Down => app.tree_scroll_down(),
-        KeyCode::Char('k') | KeyCode::Up => app.tree_scroll_up(),
-        KeyCode::Char('g') => app.tree_scroll_top(),
-        KeyCode::Char('G') => app.tree_scroll_bottom(),
-        KeyCode::Char('y') => app.copy_path_to_clipboard(),
+        KeyCode::Char('j') | KeyCode::Down => app.prune.tree_scroll_down(),
+        KeyCode::Char('k') | KeyCode::Up => app.prune.tree_scroll_up(),
+        KeyCode::Char('g') => app.prune.tree_scroll_top(),
+        KeyCode::Char('G') => app.prune.tree_scroll_bottom(),
+        KeyCode::Char('y') => app.prune.copy_path_to_clipboard(),
         _ => {}
     }
 }
@@ -366,17 +368,17 @@ fn handle_prune_filter_key(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Esc => {
             app.prune.filter_text.clear();
-            app.apply_filter();
+            app.prune.apply_filter();
             app.mode = AppMode::Normal;
         }
         KeyCode::Enter => app.mode = AppMode::Normal,
         KeyCode::Backspace => {
             app.prune.filter_text.pop();
-            app.apply_filter();
+            app.prune.apply_filter();
         }
         KeyCode::Char(c) => {
             app.prune.filter_text.push(c);
-            app.apply_filter();
+            app.prune.apply_filter();
         }
         _ => {}
     }
@@ -398,7 +400,7 @@ fn handle_type_filter_key(app: &mut App, code: KeyCode) {
                 0 => None,
                 n => app.prune.available_types.get(n - 1).cloned(),
             };
-            app.apply_filter();
+            app.prune.apply_filter();
             app.mode = AppMode::Normal;
         }
         _ => {}
@@ -596,7 +598,7 @@ mod tests {
             .collect();
         app.prune.selected = vec![false; 2];
         app.prune.available_types = vec!["node_modules".into()];
-        app.apply_filter();
+        app.prune.apply_filter();
 
         let mut ports = PortsState::new();
         ports.items = [(3000, 1), (3001, 2)]
