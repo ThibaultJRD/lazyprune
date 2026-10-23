@@ -217,18 +217,13 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
             }
             Tool::Ports => {
                 if app.mode == AppMode::Processing {
-                    if let Some(ref mut ports) = app.ports {
-                        let done = ports.poll_kill_results();
-                        terminal.draw(|frame| render(frame, app))?;
-                        if event::poll(Duration::from_millis(50))?
-                            && let Event::Key(key) = event::read()?
-                            && key.kind == crossterm::event::KeyEventKind::Press
-                        {
-                            handle_key(app, key);
-                        }
-                        if done {
-                            app.mode = AppMode::Normal;
-                        }
+                    app.poll_kill_results();
+                    terminal.draw(|frame| render(frame, app))?;
+                    if event::poll(Duration::from_millis(50))?
+                        && let Event::Key(key) = event::read()?
+                        && key.kind == crossterm::event::KeyEventKind::Press
+                    {
+                        handle_key(app, key);
                     }
                     continue;
                 }
@@ -280,6 +275,7 @@ fn handle_prune_key(app: &mut App, key: KeyEvent) {
         AppMode::SubFilter => handle_prune_sub_filter_key(app, key.code),
         AppMode::Confirm => handle_prune_confirm_key(app, key.code),
         AppMode::Help => handle_prune_help_key(app, key.code),
+        AppMode::Errors => handle_errors_key(app, key.code),
         AppMode::Processing => {}
     }
 }
@@ -448,6 +444,12 @@ fn handle_prune_help_key(app: &mut App, code: KeyCode) {
     }
 }
 
+fn handle_errors_key(app: &mut App, code: KeyCode) {
+    if matches!(code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q')) {
+        app.mode = AppMode::Normal;
+    }
+}
+
 // ── Ports key handlers ──────────────────────────────────────────────────────
 
 fn handle_ports_key(app: &mut App, key: KeyEvent) {
@@ -457,6 +459,7 @@ fn handle_ports_key(app: &mut App, key: KeyEvent) {
         AppMode::SubFilter => handle_ports_sub_filter_key(app, key.code),
         AppMode::Confirm => handle_ports_confirm_key(app, key.code),
         AppMode::Help => handle_ports_help_key(app, key.code),
+        AppMode::Errors => handle_errors_key(app, key.code),
         AppMode::Processing => {}
     }
 }
@@ -758,6 +761,7 @@ mod tests {
                 AppMode::Confirm,
                 AppMode::Processing,
                 AppMode::Help,
+                AppMode::Errors,
             ] {
                 let (_tx, rx) = mpsc::channel();
                 let mut app = App::new(rx, Config::load(None).unwrap());

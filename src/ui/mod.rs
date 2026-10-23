@@ -51,6 +51,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             Tool::Ports => popup::render_protocol_filter(frame, app),
         },
         AppMode::Help => popup::render_help(frame, app),
+        AppMode::Errors => popup::render_errors(frame, app),
         _ => {}
     }
 }

@@ -455,9 +455,83 @@ pub fn render_protocol_filter(frame: &mut Frame, app: &App) {
     frame.render_widget(paragraph, area);
 }
 
+pub fn render_errors(frame: &mut Frame, app: &App) {
+    let errors: &[String] = match app.active_tool {
+        Tool::Prune => &app.prune.delete_errors,
+        Tool::Ports => app.ports.as_ref().map_or(&[], |p| &p.kill_errors),
+    };
+
+    let max_show = 10;
+    let mut lines: Vec<Line> = vec![Line::raw("")];
+    for err in errors.iter().take(max_show) {
+        lines.push(Line::styled(
+            format!("  {err}"),
+            Style::default().fg(Color::White),
+        ));
+    }
+    if errors.len() > max_show {
+        lines.push(Line::styled(
+            format!("  ... and {} more", errors.len() - max_show),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        Span::styled("  [Enter/Esc]", Style::default().fg(Color::Yellow)),
+        Span::raw(" Close"),
+    ]));
+
+    let title = format!(" {} failed ", errors.len());
+    let max_line_len = lines
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.len()).sum::<usize>())
+        .max()
+        .unwrap_or(0) as u16;
+    let width = (max_line_len + 4).clamp(45, frame.area().width.saturating_sub(10));
+    let height = lines.len() as u16 + 2;
+
+    let area = popup_area(frame.area(), width, height);
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Red));
+
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
 fn help_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
     Line::from(vec![
         Span::styled(format!("  {:14}", key), Style::default().fg(Color::Cyan)),
         Span::styled(desc, Style::default().fg(Color::White)),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::app::{App, AppMode};
+    use crate::config::Config;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn test_errors_popup_lists_failures() {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(rx, Config::load(None).unwrap());
+        app.prune.delete_errors = vec!["/tmp/x/node_modules: Permission denied".into()];
+        app.mode = AppMode::Errors;
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+
+        assert!(screen.contains("1 failed"));
+        assert!(screen.contains("/tmp/x/node_modules: Permission denied"));
+    }
 }

@@ -350,9 +350,10 @@ impl PortsState {
                     KillMessage::Killed { .. } => {
                         self.kill_progress += 1;
                     }
-                    KillMessage::Error { error, .. } => {
+                    KillMessage::Error { port, pid, error } => {
                         self.kill_progress += 1;
-                        self.kill_errors.push(error);
+                        self.kill_errors
+                            .push(format!(":{port} (PID {pid}): {error}"));
                     }
                     KillMessage::Complete => {
                         self.kill_rx = None;

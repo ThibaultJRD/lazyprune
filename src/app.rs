@@ -59,6 +59,7 @@ pub enum AppMode {
     Confirm,
     Processing,
     Help,
+    Errors,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -504,7 +505,7 @@ impl App {
                     Err(e) => {
                         let _ = tx.send(DeleteMessage::Error {
                             idx: *idx,
-                            err: e.to_string(),
+                            err: format!("{}: {e}", path.display()),
                         });
                     }
                 }
@@ -552,7 +553,11 @@ impl App {
                         self.prune.path_index_map.clear();
                         self.prune.tree_cache.clear();
                         self.apply_filter();
-                        self.mode = AppMode::Normal;
+                        self.mode = if self.prune.delete_errors.is_empty() {
+                            AppMode::Normal
+                        } else {
+                            AppMode::Errors
+                        };
                         return;
                     }
                 },
@@ -567,6 +572,20 @@ impl App {
         }
 
         self.apply_filter();
+    }
+
+    /// Poll the ports kill channel and leave Processing mode once done.
+    pub fn poll_kill_results(&mut self) {
+        let Some(ports) = self.ports.as_mut() else {
+            return;
+        };
+        if ports.poll_kill_results() {
+            self.mode = if ports.kill_errors.is_empty() {
+                AppMode::Normal
+            } else {
+                AppMode::Errors
+            };
+        }
     }
 
     /// Count of selected items.
@@ -1015,6 +1034,44 @@ mod tests {
             file_count: 0,
             git_root: None,
         }
+    }
+
+    #[test]
+    fn test_failed_delete_shows_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("gone/node_modules");
+        let missing_str = missing.to_str().unwrap();
+        let mut app = make_test_app(vec![make_result("node_modules", missing_str, 10)]);
+        app.prune.selected[0] = true;
+        app.start_deleting();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.mode == AppMode::Processing && std::time::Instant::now() < deadline {
+            app.poll_delete_results();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(app.mode, AppMode::Errors);
+        assert_eq!(app.prune.delete_errors.len(), 1);
+        assert!(app.prune.delete_errors[0].contains(missing_str));
+    }
+
+    #[test]
+    fn test_failed_kill_shows_errors() {
+        let mut ports = PortsState::new();
+        let (tx, rx) = mpsc::channel();
+        ports.kill_rx = Some(rx);
+        tx.send(crate::ports::KillMessage::Error {
+            port: 3000,
+            pid: 1,
+            error: "EPERM".into(),
+        })
+        .unwrap();
+        drop(tx);
+        let mut app = make_test_app(vec![]);
+        app.ports = Some(ports);
+        app.active_tool = Tool::Ports;
+        app.mode = AppMode::Processing;
+        app.poll_kill_results();
+        assert_eq!(app.mode, AppMode::Errors);
     }
 
     fn make_test_app(items: Vec<ScanResult>) -> App {
