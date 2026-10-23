@@ -120,7 +120,7 @@ Default targets: `node_modules`, `Pods`, `.gradle`/`build`, `.pnpm-store`, `.yar
 **Ports mode:**
 - Lists listening ports (TCP `LISTEN`, bound UDP) via `lsof`, one row per port/protocol/process
 - Dev filter hides system ports, showing only your dev servers
-- Kill sends SIGTERM, then SIGKILL after 500ms if the process survives
+- Kill sends SIGTERM once per process, then SIGKILL after 3s if it survives; a PID that no longer runs the scanned process is never signalled
 - Kill requires explicit confirmation
 
 ## License

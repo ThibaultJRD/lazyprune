@@ -396,58 +396,85 @@ fn verify_process(pid: u32, expected_name: &str) -> bool {
     !actual.is_empty() && (actual.contains(expected_name) || expected_name.contains(actual))
 }
 
-/// Kill each target process with SIGTERM, wait 500 ms, then SIGKILL if still alive.
+/// True while `pid` exists, including processes owned by other users (EPERM).
+fn is_alive(pid: u32) -> bool {
+    !matches!(
+        signal::kill(Pid::from_raw(pid as i32), None),
+        Err(nix::errno::Errno::ESRCH)
+    )
+}
+
+/// Time a process gets to exit after SIGTERM before being SIGKILLed.
+const KILL_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Kill the selected processes: SIGTERM, then SIGKILL survivors after a grace period.
 pub fn kill_ports(targets: Vec<PortInfo>, tx: mpsc::Sender<KillMessage>) {
-    for target in &targets {
-        let _ = tx.send(KillMessage::Killing {
-            port: target.port,
-            pid: target.pid,
-            process: target.process_name.clone(),
-        });
+    kill_ports_with_grace(targets, tx, KILL_GRACE);
+}
 
-        let nix_pid = Pid::from_raw(target.pid as i32);
+fn kill_ports_with_grace(
+    targets: Vec<PortInfo>,
+    tx: mpsc::Sender<KillMessage>,
+    grace: std::time::Duration,
+) {
+    // One signal per process, even when it owns several selected ports
+    let mut processes: Vec<(u32, String, Vec<u16>)> = Vec::new();
+    for t in targets {
+        match processes.iter_mut().find(|(pid, ..)| *pid == t.pid) {
+            Some((_, _, ports)) => ports.push(t.port),
+            None => processes.push((t.pid, t.process_name, vec![t.port])),
+        }
+    }
 
-        // Send SIGTERM
-        if let Err(e) = signal::kill(nix_pid, Signal::SIGTERM) {
-            let _ = tx.send(KillMessage::Error {
-                port: target.port,
-                pid: target.pid,
-                error: format!("SIGTERM failed: {e}"),
+    let report = |pid: u32, ports: &[u16], error: Option<String>| {
+        for &port in ports {
+            let _ = tx.send(match &error {
+                None => KillMessage::Killed { port, pid },
+                Some(e) => KillMessage::Error {
+                    port,
+                    pid,
+                    error: e.clone(),
+                },
             });
+        }
+    };
+
+    // SIGTERM everything first so processes shut down concurrently
+    let mut terminating = Vec::new();
+    for (pid, name, ports) in &processes {
+        let _ = tx.send(KillMessage::Killing {
+            port: ports[0],
+            pid: *pid,
+            process: name.clone(),
+        });
+        if !is_alive(*pid) {
+            // Already exited: the port is free
+            report(*pid, ports, None);
+        } else if !verify_process(*pid, name) {
+            report(*pid, ports, Some(format!("PID no longer runs {name}")));
+        } else if let Err(e) = signal::kill(Pid::from_raw(*pid as i32), Signal::SIGTERM) {
+            report(*pid, ports, Some(format!("SIGTERM failed: {e}")));
+        } else {
+            terminating.push((*pid, name, ports));
+        }
+    }
+
+    let deadline = std::time::Instant::now() + grace;
+    while terminating.iter().any(|(pid, ..)| is_alive(*pid)) && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    for (pid, name, ports) in terminating {
+        // Re-check identity: the PID may have been reused after the process exited
+        if is_alive(pid)
+            && verify_process(pid, name)
+            && let Err(e) = signal::kill(Pid::from_raw(pid as i32), Signal::SIGKILL)
+        {
+            report(pid, ports, Some(format!("SIGKILL failed: {e}")));
             continue;
         }
-
-        // Wait 500 ms for graceful shutdown
-        std::thread::sleep(std::time::Duration::from_millis(500));
-
-        // Check if still alive
-        let still_alive = signal::kill(nix_pid, None).is_ok();
-        if still_alive {
-            if verify_process(target.pid, &target.process_name) {
-                // Process is still alive and is indeed the expected process — use SIGKILL
-                if let Err(e) = signal::kill(nix_pid, Signal::SIGKILL) {
-                    let _ = tx.send(KillMessage::Error {
-                        port: target.port,
-                        pid: target.pid,
-                        error: format!("SIGKILL failed: {e}"),
-                    });
-                    continue;
-                }
-            } else {
-                // PID is alive but belongs to a different process — cannot safely kill
-                let _ = tx.send(KillMessage::Error {
-                    port: target.port,
-                    pid: target.pid,
-                    error: "Process survived SIGTERM but PID was reused".to_string(),
-                });
-                continue;
-            }
-        }
-
-        let _ = tx.send(KillMessage::Killed {
-            port: target.port,
-            pid: target.pid,
-        });
+        report(pid, ports, None);
     }
 
     let _ = tx.send(KillMessage::Complete);
@@ -1034,6 +1061,114 @@ mod tests {
         assert_eq!(state.sort_mode, PortsSortMode::PidAsc);
         state.cycle_sort();
         assert_eq!(state.sort_mode, PortsSortMode::PortAsc);
+    }
+
+    fn alive(pid: u32) -> bool {
+        !matches!(
+            signal::kill(Pid::from_raw(pid as i32), None),
+            Err(nix::errno::Errno::ESRCH)
+        )
+    }
+
+    fn wait_dead(pid: u32) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while alive(pid) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        !alive(pid)
+    }
+
+    /// Spawn `sleep` detached from the test so init reaps it once killed.
+    fn spawn_sleep(prefix: &str) -> u32 {
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "({prefix} exec sleep 30) >/dev/null 2>&1 & echo $!"
+            ))
+            .output()
+            .unwrap();
+        let pid: u32 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !verify_process(pid, "sleep") && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        pid
+    }
+
+    fn target(port: u16, pid: u32, process: &str) -> PortInfo {
+        PortInfo {
+            pid,
+            ..make_port_info(port, process)
+        }
+    }
+
+    fn run_kill(targets: Vec<PortInfo>, grace_ms: u64) -> (Vec<u16>, Vec<String>) {
+        let (tx, rx) = mpsc::channel();
+        kill_ports_with_grace(targets, tx, std::time::Duration::from_millis(grace_ms));
+        let (mut killed, mut errors) = (Vec::new(), Vec::new());
+        for msg in rx {
+            match msg {
+                KillMessage::Killed { port, .. } => killed.push(port),
+                KillMessage::Error { error, .. } => errors.push(error),
+                _ => {}
+            }
+        }
+        killed.sort();
+        (killed, errors)
+    }
+
+    #[test]
+    fn test_kill_terminates_process() {
+        let pid = spawn_sleep("");
+        let (killed, errors) = run_kill(vec![target(3000, pid, "sleep")], 2000);
+        assert!(wait_dead(pid));
+        assert_eq!(killed, vec![3000]);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_kill_escalates_to_sigkill() {
+        let pid = spawn_sleep("trap '' TERM;");
+        let (killed, errors) = run_kill(vec![target(3000, pid, "sleep")], 200);
+        assert!(wait_dead(pid));
+        assert_eq!(killed, vec![3000]);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_kill_signals_each_process_once() {
+        // One process listening on two selected ports
+        let pid = spawn_sleep("");
+        let targets = vec![target(3000, pid, "sleep"), target(3001, pid, "sleep")];
+        let (killed, errors) = run_kill(targets, 2000);
+        assert!(wait_dead(pid));
+        assert_eq!(killed, vec![3000, 3001]);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn test_kill_spares_pid_running_another_process() {
+        // Scanned as "node", but the PID now runs something else
+        let pid = spawn_sleep("");
+        let (killed, errors) = run_kill(vec![target(3000, pid, "node")], 200);
+        let still_alive = alive(pid);
+        let _ = signal::kill(Pid::from_raw(pid as i32), Signal::SIGKILL);
+        assert!(
+            still_alive,
+            "no signal must reach a PID that changed process"
+        );
+        assert!(killed.is_empty());
+        assert_eq!(errors.len(), 1);
+    }
+
+    #[test]
+    fn test_kill_counts_exited_process_as_killed() {
+        let pid = spawn_sleep("");
+        let _ = signal::kill(Pid::from_raw(pid as i32), Signal::SIGKILL);
+        assert!(wait_dead(pid));
+        let (killed, errors) = run_kill(vec![target(3000, pid, "sleep")], 200);
+        assert_eq!(killed, vec![3000]);
+        assert!(errors.is_empty(), "{errors:?}");
     }
 
     #[test]
