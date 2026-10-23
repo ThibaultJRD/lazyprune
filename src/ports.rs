@@ -76,6 +76,7 @@ pub struct PortsState {
     pub dev_filter_active: bool,
     pub dev_filter_ports: HashSet<u16>,
     pub scan_complete: bool,
+    pub scan_error: Option<String>,
     pub scan_tick: u8,
     pub scan_rx: Option<mpsc::Receiver<PortScanMessage>>,
     pub kill_rx: Option<mpsc::Receiver<KillMessage>>,
@@ -101,6 +102,7 @@ impl PortsState {
             dev_filter_active: false,
             dev_filter_ports: HashSet::new(),
             scan_complete: false,
+            scan_error: None,
             scan_tick: 0,
             scan_rx: None,
             kill_rx: None,
@@ -117,6 +119,7 @@ impl PortsState {
         self.filtered_indices.clear();
         self.selected.clear();
         self.scan_complete = false;
+        self.scan_error = None;
 
         let (tx, rx) = mpsc::channel();
         self.scan_rx = Some(rx);
@@ -143,7 +146,7 @@ impl PortsState {
                         self.apply_filter();
                         return;
                     }
-                    PortScanMessage::Error(_) => {}
+                    PortScanMessage::Error(e) => self.scan_error = Some(e),
                 },
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -932,6 +935,19 @@ mod tests {
             state: String::new(),
             connections: 1,
         }
+    }
+
+    #[test]
+    fn test_ports_scan_error_is_kept() {
+        let mut state = PortsState::new();
+        let (tx, rx) = mpsc::channel();
+        state.scan_rx = Some(rx);
+        tx.send(PortScanMessage::Error("lsof failed: not found".into()))
+            .unwrap();
+        drop(tx);
+        state.poll_scan_results();
+        assert!(state.scan_complete);
+        assert_eq!(state.scan_error.as_deref(), Some("lsof failed: not found"));
     }
 
     #[test]

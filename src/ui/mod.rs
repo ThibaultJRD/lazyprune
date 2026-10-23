@@ -119,6 +119,13 @@ fn render_header(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 },
             ));
 
+            if let Some(err) = &ports.scan_error {
+                spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+                spans.push(Span::styled(
+                    format!("⚠ {err}"),
+                    Style::default().fg(Color::Red),
+                ));
+            }
             if !ports.scan_complete {
                 let spinner = SPINNER_FRAMES[(ports.scan_tick as usize) % SPINNER_FRAMES.len()];
                 spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
@@ -369,4 +376,34 @@ fn render_footer(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     frame.render_widget(Paragraph::new(line1), line1_area);
     frame.render_widget(Paragraph::new(line2), line2_area);
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::app::{App, Tool};
+    use crate::config::Config;
+    use crate::ports::PortsState;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn test_ports_header_shows_scan_error() {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(rx, Config::load(None).unwrap());
+        let mut ports = PortsState::new();
+        ports.scan_complete = true;
+        ports.scan_error = Some("lsof failed: not found".into());
+        app.ports = Some(ports);
+        app.active_tool = Tool::Ports;
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
+        terminal.draw(|f| super::render(f, &mut app)).unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(screen.contains("lsof failed: not found"));
+    }
 }
