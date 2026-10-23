@@ -56,6 +56,23 @@ fn default_root() -> String {
     "~".to_string()
 }
 
+/// ~/.config on macOS (instead of ~/Library/Application Support), XDG config dir elsewhere
+fn config_dir() -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        dirs::home_dir().map(|h| h.join(".config"))
+    } else {
+        dirs::config_dir()
+    }
+}
+
+/// Use the legacy path only when it exists and the primary one doesn't
+fn resolve_config_path(primary: PathBuf, legacy: Option<PathBuf>) -> PathBuf {
+    match legacy {
+        Some(legacy) if !primary.exists() && legacy.exists() => legacy,
+        _ => primary,
+    }
+}
+
 const DEFAULT_CONFIG: &str = include_str!("../config.default.toml");
 
 impl Config {
@@ -93,9 +110,12 @@ impl Config {
         DEFAULT_CONFIG
     }
 
-    /// Return platform config file path: ~/.config/lazyprune/config.toml
+    /// Return config file path: ~/.config/lazyprune/config.toml.
+    /// Falls back to the legacy macOS location (~/Library/Application Support) if only it exists.
     pub fn user_config_path() -> Option<PathBuf> {
-        dirs::config_dir().map(|d| d.join("lazyprune").join("config.toml"))
+        let primary = config_dir()?.join("lazyprune").join("config.toml");
+        let legacy = dirs::config_dir().map(|d| d.join("lazyprune").join("config.toml"));
+        Some(resolve_config_path(primary, legacy))
     }
 }
 
@@ -212,5 +232,41 @@ dev_filter = ["8080"]
         user.apply_to(&mut config);
         assert!(config.ports.dev_filter_enabled); // kept default
         assert_eq!(config.ports.dev_filter, vec!["8080"]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_config_dir_is_dot_config_on_macos() {
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(config_dir(), Some(home.join(".config")));
+    }
+
+    #[test]
+    fn test_resolve_config_path_falls_back_to_legacy() {
+        // Only the legacy file exists: keep reading it
+        let dir = tempfile::tempdir().unwrap();
+        let primary = dir.path().join("primary.toml");
+        let legacy = dir.path().join("legacy.toml");
+        std::fs::write(&legacy, "").unwrap();
+        assert_eq!(resolve_config_path(primary, Some(legacy.clone())), legacy);
+    }
+
+    #[test]
+    fn test_resolve_config_path_prefers_primary() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = dir.path().join("primary.toml");
+        let legacy = dir.path().join("legacy.toml");
+        std::fs::write(&primary, "").unwrap();
+        std::fs::write(&legacy, "").unwrap();
+        assert_eq!(resolve_config_path(primary.clone(), Some(legacy)), primary);
+    }
+
+    #[test]
+    fn test_resolve_config_path_defaults_to_primary() {
+        // Neither exists: --init-config must write to the primary location
+        let dir = tempfile::tempdir().unwrap();
+        let primary = dir.path().join("primary.toml");
+        let legacy = dir.path().join("legacy.toml");
+        assert_eq!(resolve_config_path(primary.clone(), Some(legacy)), primary);
     }
 }
