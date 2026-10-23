@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Flex, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
 fn popup_area(area: Rect, width: u16, height: u16) -> Rect {
@@ -482,13 +482,17 @@ pub fn render_errors(frame: &mut Frame, app: &App) {
     ]));
 
     let title = format!(" {} failed ", errors.len());
-    let max_line_len = lines
+    let max_line_len = lines.iter().map(|l| l.width()).max().unwrap_or(0) as u16;
+    let width = (max_line_len + 4)
+        .max(45)
+        .min(frame.area().width.saturating_sub(10));
+    // Long paths wrap, so count the rows each line takes
+    let inner_width = usize::from(width.saturating_sub(2)).max(1);
+    let rows: usize = lines
         .iter()
-        .map(|l| l.spans.iter().map(|s| s.content.len()).sum::<usize>())
-        .max()
-        .unwrap_or(0) as u16;
-    let width = (max_line_len + 4).clamp(45, frame.area().width.saturating_sub(10));
-    let height = lines.len() as u16 + 2;
+        .map(|l| l.width().div_ceil(inner_width).max(1))
+        .sum();
+    let height = (rows as u16 + 2).min(frame.area().height);
 
     let area = popup_area(frame.area(), width, height);
     frame.render_widget(Clear, area);
@@ -498,7 +502,10 @@ pub fn render_errors(frame: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Red));
 
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
 }
 
 fn help_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
@@ -533,5 +540,26 @@ mod tests {
 
         assert!(screen.contains("1 failed"));
         assert!(screen.contains("/tmp/x/node_modules: Permission denied"));
+    }
+    #[test]
+    fn test_errors_popup_wraps_long_errors() {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(rx, Config::load(None).unwrap());
+        let long_path = format!("/{}/node_modules", "very-long-directory-name/".repeat(6));
+        app.prune.delete_errors = vec![format!("{long_path}: Permission denied (os error 13)")];
+        app.mode = AppMode::Errors;
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        terminal.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+
+        // The reason must stay visible even when the path is wider than the popup
+        assert!(screen.contains("Permission denied (os error 13)"));
     }
 }
