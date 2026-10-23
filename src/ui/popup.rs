@@ -71,7 +71,9 @@ pub fn render_confirm(frame: &mut Frame, app: &App) {
     let terminal_width = frame.area().width;
     let width = max_line_len
         .max(title_len)
-        .clamp(45, terminal_width.saturating_sub(10));
+        .max(45)
+        // Not clamp(): it panics when the terminal is narrower than the minimum
+        .min(terminal_width.saturating_sub(10));
     let height = lines.len() as u16 + 2; // +2 for borders
 
     let area = popup_area(frame.area(), width, height);
@@ -327,7 +329,9 @@ pub fn render_kill_confirm(frame: &mut Frame, app: &App) {
     let terminal_width = frame.area().width;
     let width = max_line_len
         .max(title_len)
-        .clamp(45, terminal_width.saturating_sub(10));
+        .max(45)
+        // Not clamp(): it panics when the terminal is narrower than the minimum
+        .min(terminal_width.saturating_sub(10));
     let height = lines.len() as u16 + 2;
 
     let area = popup_area(frame.area(), width, height);
@@ -517,49 +521,93 @@ fn help_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::app::{App, AppMode};
+    use crate::app::{App, AppMode, Tool};
     use crate::config::Config;
+    use crate::ports::{PortInfo, PortsState, Protocol};
+    use crate::scanner::ScanResult;
     use ratatui::{Terminal, backend::TestBackend};
 
-    #[test]
-    fn test_errors_popup_lists_failures() {
+    fn test_app() -> App {
         let (_tx, rx) = std::sync::mpsc::channel();
-        let mut app = App::new(rx, Config::load(None).unwrap());
-        app.prune.delete_errors = vec!["/tmp/x/node_modules: Permission denied".into()];
-        app.mode = AppMode::Errors;
+        App::new(rx, Config::load(None).unwrap())
+    }
 
-        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        terminal.draw(|f| crate::ui::render(f, &mut app)).unwrap();
-        let screen: String = terminal
+    fn render_screen(app: &mut App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| crate::ui::render(f, app)).unwrap();
+        terminal
             .backend()
             .buffer()
             .content()
             .iter()
             .map(|c| c.symbol())
-            .collect();
+            .collect()
+    }
 
+    #[test]
+    fn test_errors_popup_lists_failures() {
+        let mut app = test_app();
+        app.prune.delete_errors = vec!["/tmp/x/node_modules: Permission denied".into()];
+        app.mode = AppMode::Errors;
+
+        let screen = render_screen(&mut app, 100, 30);
         assert!(screen.contains("1 failed"));
         assert!(screen.contains("/tmp/x/node_modules: Permission denied"));
     }
+
     #[test]
     fn test_errors_popup_wraps_long_errors() {
-        let (_tx, rx) = std::sync::mpsc::channel();
-        let mut app = App::new(rx, Config::load(None).unwrap());
+        let mut app = test_app();
         let long_path = format!("/{}/node_modules", "very-long-directory-name/".repeat(6));
         app.prune.delete_errors = vec![format!("{long_path}: Permission denied (os error 13)")];
         app.mode = AppMode::Errors;
 
-        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
-        terminal.draw(|f| crate::ui::render(f, &mut app)).unwrap();
-        let screen: String = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|c| c.symbol())
-            .collect();
-
         // The reason must stay visible even when the path is wider than the popup
+        let screen = render_screen(&mut app, 80, 30);
         assert!(screen.contains("Permission denied (os error 13)"));
+    }
+
+    #[test]
+    fn test_delete_confirm_fits_narrow_terminal() {
+        let mut app = test_app();
+        app.prune.items = vec![ScanResult {
+            path: "/p/node_modules".into(),
+            target_name: "node_modules".into(),
+            size: 1,
+            shared_size: 0,
+            last_modified: None,
+            file_count: 1,
+            git_root: None,
+        }];
+        app.prune.selected = vec![true];
+        app.apply_filter();
+        app.mode = AppMode::Confirm;
+
+        assert!(render_screen(&mut app, 50, 30).contains("Delete 1 items?"));
+        render_screen(&mut app, 20, 30);
+    }
+
+    #[test]
+    fn test_kill_confirm_fits_narrow_terminal() {
+        let mut ports = PortsState::new();
+        ports.items = vec![PortInfo {
+            port: 3000,
+            protocol: Protocol::Tcp,
+            pid: 1,
+            process_name: "node".into(),
+            command: String::new(),
+            user: "me".into(),
+            state: "LISTEN".into(),
+            connections: 0,
+        }];
+        ports.selected = vec![true];
+        ports.scan_complete = true;
+        ports.apply_filter();
+        let mut app = test_app();
+        app.ports = Some(ports);
+        app.active_tool = Tool::Ports;
+        app.mode = AppMode::Confirm;
+
+        assert!(render_screen(&mut app, 50, 30).contains("Kill 1 process?"));
     }
 }
