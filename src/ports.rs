@@ -43,16 +43,13 @@ impl PortsSortMode {
 
 // ── Kill messages ─────────────────────────────────────────────────────────────
 
-#[allow(dead_code)]
 pub enum KillMessage {
     Killing {
-        port: u16,
-        pid: u32,
         process: String,
     },
     Killed {
+        #[allow(dead_code)] // read by tests
         port: u16,
-        pid: u32,
     },
     Error {
         port: u16,
@@ -431,7 +428,7 @@ fn kill_ports_with_grace(
     let report = |pid: u32, ports: &[u16], error: Option<String>| {
         for &port in ports {
             let _ = tx.send(match &error {
-                None => KillMessage::Killed { port, pid },
+                None => KillMessage::Killed { port },
                 Some(e) => KillMessage::Error {
                     port,
                     pid,
@@ -445,8 +442,6 @@ fn kill_ports_with_grace(
     let mut terminating = Vec::new();
     for (pid, name, ports) in &processes {
         let _ = tx.send(KillMessage::Killing {
-            port: ports[0],
-            pid: *pid,
             process: name.clone(),
         });
         if !is_alive(*pid) {
@@ -1195,21 +1190,5 @@ mod tests {
         let (killed, errors) = run_kill(vec![target(3000, pid, "sleep")], 200);
         assert_eq!(killed, vec![3000]);
         assert!(errors.is_empty(), "{errors:?}");
-    }
-
-    #[test]
-    fn test_kill_message_types() {
-        let msg = KillMessage::Killing {
-            port: 3000,
-            pid: 123,
-            process: "node".into(),
-        };
-        match msg {
-            KillMessage::Killing { port, pid, .. } => {
-                assert_eq!(port, 3000);
-                assert_eq!(pid, 123);
-            }
-            _ => panic!("wrong variant"),
-        }
     }
 }

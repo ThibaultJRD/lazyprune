@@ -5,18 +5,9 @@ use ratatui::widgets::ListState;
 use std::sync::mpsc;
 
 pub enum DeleteMessage {
-    Deleting {
-        path: String,
-    },
-    Deleted {
-        idx: usize,
-        size: u64,
-    },
-    Error {
-        #[allow(dead_code)]
-        idx: usize,
-        err: String,
-    },
+    Deleting { path: String },
+    Deleted { idx: usize, size: u64 },
+    Error { err: String },
     Complete,
 }
 
@@ -109,7 +100,6 @@ pub struct PruneState {
     pub dirs_scanned: u64,
     pub total_deleted: u64,
     pub items_deleted: usize,
-    pub scan_errors: u64,
     pub scan_tick: u8,
     pub available_types: Vec<String>,
     pub type_filter_cursor: usize,
@@ -129,7 +119,6 @@ pub struct PruneState {
     pub tree_view_height: std::cell::Cell<u16>,
     pub tree_debounce_at: Option<std::time::Instant>,
     pub tree_requested_path: Option<std::path::PathBuf>,
-    pub path_index_map: std::collections::HashMap<std::path::PathBuf, usize>,
 }
 
 pub struct App {
@@ -139,7 +128,6 @@ pub struct App {
     pub mode: AppMode,
     pub focus: FocusPanel,
     pub exit: bool,
-    #[allow(dead_code)]
     pub config: Config,
 }
 
@@ -162,7 +150,6 @@ impl App {
                 dirs_scanned: 0,
                 total_deleted: 0,
                 items_deleted: 0,
-                scan_errors: 0,
                 scan_tick: 0,
                 available_types: Vec::new(),
                 type_filter_cursor: 0,
@@ -181,7 +168,6 @@ impl App {
                 tree_view_height: std::cell::Cell::new(0),
                 tree_debounce_at: None,
                 tree_requested_path: None,
-                path_index_map: std::collections::HashMap::new(),
             },
             active_tool: Tool::Prune,
             ports: None,
@@ -230,7 +216,6 @@ impl App {
                             self.prune.available_types.push(result.target_name.clone());
                         }
                         let idx = self.prune.items.len();
-                        self.prune.path_index_map.insert(result.path.clone(), idx);
                         self.prune.items.push(result);
                         self.prune.selected.push(false);
                         // Append to filtered_indices if passes filter (no sort yet)
@@ -253,9 +238,6 @@ impl App {
                     }
                     ScanMessage::Progress { dirs_scanned } => {
                         self.prune.dirs_scanned = dirs_scanned;
-                    }
-                    ScanMessage::Error(_) => {
-                        self.prune.scan_errors += 1;
                     }
                 },
                 Err(mpsc::TryRecvError::Empty) => break,
@@ -519,7 +501,6 @@ impl App {
                     }
                     Err(e) => {
                         let _ = tx.send(DeleteMessage::Error {
-                            idx: *idx,
                             err: format!("{}: {e}", path.display()),
                         });
                     }
@@ -548,7 +529,7 @@ impl App {
                         self.prune.delete_progress += 1;
                         self.prune.delete_done_indices.push(idx);
                     }
-                    DeleteMessage::Error { idx: _, err } => {
+                    DeleteMessage::Error { err } => {
                         self.prune.delete_progress += 1;
                         self.prune.delete_errors.push(err);
                     }
@@ -573,9 +554,6 @@ impl App {
                         {
                             self.prune.type_filter = None;
                         }
-                        // path_index_map is stale after removal (indices shifted),
-                        // but it's only used during scan which is already complete.
-                        self.prune.path_index_map.clear();
                         self.prune.tree_cache.clear();
                         self.apply_filter();
                         self.mode = if self.prune.delete_errors.is_empty() {
@@ -1570,7 +1548,6 @@ mod tests {
         assert_eq!(app.prune.items.len(), 2);
         assert_eq!(app.prune.items[0].size, 500);
         assert_eq!(app.prune.items[1].size, 200);
-        assert_eq!(app.prune.path_index_map.len(), 2);
         assert!(app.prune.scan_complete);
         // Sorted by size desc after Complete triggered apply_filter
         assert_eq!(app.prune.items[app.prune.filtered_indices[0]].size, 500);

@@ -23,12 +23,8 @@ pub struct ScanResult {
 #[derive(Debug)]
 pub enum ScanMessage {
     Found(ScanResult),
-    Progress {
-        dirs_scanned: u64,
-    },
+    Progress { dirs_scanned: u64 },
     Complete,
-    #[allow(dead_code)]
-    Error(String),
 }
 
 pub struct DirStats {
@@ -266,7 +262,6 @@ mod tests {
             match msg {
                 ScanMessage::Found(r) => results.push(r),
                 ScanMessage::Complete => break,
-                ScanMessage::Error(e) => panic!("Scan error: {}", e),
                 _ => {}
             }
         }
