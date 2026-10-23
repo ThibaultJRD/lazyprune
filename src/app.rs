@@ -546,9 +546,7 @@ impl App {
                             self.prune.selected.remove(idx);
                         }
                         // Deselect all items (errored items stay in list but unselected)
-                        for s in &mut self.prune.selected {
-                            *s = false;
-                        }
+                        self.prune.selected.fill(false);
                         // path_index_map is stale after removal (indices shifted),
                         // but it's only used during scan which is already complete.
                         self.prune.path_index_map.clear();
