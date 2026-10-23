@@ -1,11 +1,11 @@
 use crate::app::{App, FocusPanel};
 use crate::ports::Protocol;
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem},
-    Frame,
 };
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {

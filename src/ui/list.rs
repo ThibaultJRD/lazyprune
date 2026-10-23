@@ -3,11 +3,11 @@ use std::time::SystemTime;
 use crate::app::App;
 use crate::{format_duration, format_size};
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem},
-    Frame,
 };
 
 /// Shorten a path to show ~/ prefix and last 2-3 components.

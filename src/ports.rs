@@ -177,10 +177,10 @@ impl PortsState {
                 return false;
             }
         }
-        if let Some(proto) = self.protocol_filter {
-            if info.protocol != proto {
-                return false;
-            }
+        if let Some(proto) = self.protocol_filter
+            && info.protocol != proto
+        {
+            return false;
         }
         true
     }
@@ -228,10 +228,10 @@ impl PortsState {
 
     /// Toggle selection of the item at the given visible position.
     pub fn toggle_selection(&mut self, pos: usize) {
-        if let Some(&item_idx) = self.filtered_indices.get(pos) {
-            if item_idx < self.selected.len() {
-                self.selected[item_idx] = !self.selected[item_idx];
-            }
+        if let Some(&item_idx) = self.filtered_indices.get(pos)
+            && item_idx < self.selected.len()
+        {
+            self.selected[item_idx] = !self.selected[item_idx];
         }
     }
 
@@ -317,7 +317,7 @@ impl PortsState {
             .selected
             .iter()
             .enumerate()
-            .filter(|(_, &sel)| sel)
+            .filter(|&(_, &sel)| sel)
             .map(|(i, _)| self.items[i].clone())
             .collect();
 

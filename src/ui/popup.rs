@@ -1,11 +1,11 @@
 use crate::app::{App, Tool};
 use crate::format_size;
 use ratatui::{
+    Frame,
     layout::{Constraint, Flex, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
-    Frame,
 };
 
 fn popup_area(area: Rect, width: u16, height: u16) -> Rect {
@@ -19,10 +19,10 @@ fn popup_area(area: Rect, width: u16, height: u16) -> Rect {
 }
 
 fn shorten_path(path: &std::path::Path) -> String {
-    if let Some(home) = dirs::home_dir() {
-        if let Ok(stripped) = path.strip_prefix(&home) {
-            return format!("~/{}", stripped.display());
-        }
+    if let Some(home) = dirs::home_dir()
+        && let Ok(stripped) = path.strip_prefix(&home)
+    {
+        return format!("~/{}", stripped.display());
     }
     path.display().to_string()
 }

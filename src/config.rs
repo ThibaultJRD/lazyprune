@@ -81,14 +81,14 @@ impl Config {
         let mut config: Config = toml::from_str(DEFAULT_CONFIG)
             .map_err(|e| format!("Failed to parse default config: {e}"))?;
 
-        if let Some(path) = user_config_path {
-            if path.exists() {
-                let user_str = std::fs::read_to_string(path)
-                    .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
-                let user_config: UserConfigOverride = toml::from_str(&user_str)
-                    .map_err(|e| format!("Failed to parse {}: {e}", path.display()))?;
-                user_config.apply_to(&mut config);
-            }
+        if let Some(path) = user_config_path
+            && path.exists()
+        {
+            let user_str = std::fs::read_to_string(path)
+                .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+            let user_config: UserConfigOverride = toml::from_str(&user_str)
+                .map_err(|e| format!("Failed to parse {}: {e}", path.display()))?;
+            user_config.apply_to(&mut config);
         }
 
         Ok(config)
@@ -96,11 +96,11 @@ impl Config {
 
     /// Resolve root path (expand ~)
     pub fn root_path(&self) -> PathBuf {
-        if self.root.starts_with('~') {
-            if let Some(home) = dirs::home_dir() {
-                let rest = self.root.get(2..).unwrap_or("");
-                return home.join(rest);
-            }
+        if self.root.starts_with('~')
+            && let Some(home) = dirs::home_dir()
+        {
+            let rest = self.root.get(2..).unwrap_or("");
+            return home.join(rest);
         }
         PathBuf::from(&self.root)
     }

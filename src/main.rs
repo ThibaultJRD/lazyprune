@@ -197,13 +197,12 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                 if app.mode == AppMode::Processing {
                     app.poll_delete_results();
                     terminal.draw(|frame| render(frame, app))?;
-                    if event::poll(Duration::from_millis(50))? {
-                        if let Event::Key(key) = event::read()? {
-                            if key.kind == crossterm::event::KeyEventKind::Press {
-                                // Consume keys during deletion
-                                let _ = key;
-                            }
-                        }
+                    if event::poll(Duration::from_millis(50))?
+                        && let Event::Key(key) = event::read()?
+                        && key.kind == crossterm::event::KeyEventKind::Press
+                    {
+                        // Consume keys during deletion
+                        let _ = key;
                     }
                     continue;
                 }
@@ -221,12 +220,11 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                     if let Some(ref mut ports) = app.ports {
                         let done = ports.poll_kill_results();
                         terminal.draw(|frame| render(frame, app))?;
-                        if event::poll(Duration::from_millis(50))? {
-                            if let Event::Key(key) = event::read()? {
-                                if key.kind == crossterm::event::KeyEventKind::Press {
-                                    let _ = key;
-                                }
-                            }
+                        if event::poll(Duration::from_millis(50))?
+                            && let Event::Key(key) = event::read()?
+                            && key.kind == crossterm::event::KeyEventKind::Press
+                        {
+                            let _ = key;
                         }
                         if done {
                             app.mode = AppMode::Normal;
@@ -246,12 +244,11 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
 
         terminal.draw(|frame| render(frame, app))?;
 
-        if event::poll(Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == crossterm::event::KeyEventKind::Press {
-                    handle_key(app, key);
-                }
-            }
+        if event::poll(Duration::from_millis(50))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == crossterm::event::KeyEventKind::Press
+        {
+            handle_key(app, key);
         }
     }
     Ok(())
@@ -293,11 +290,11 @@ fn switch_tool(app: &mut App, tool: Tool) {
             }
         }
         Tool::Ports => {
-            if let Some(ref mut ports) = app.ports {
-                if !ports.filter_text.is_empty() {
-                    ports.filter_text.clear();
-                    ports.apply_filter();
-                }
+            if let Some(ref mut ports) = app.ports
+                && !ports.filter_text.is_empty()
+            {
+                ports.filter_text.clear();
+                ports.apply_filter();
             }
         }
     }
@@ -553,10 +550,10 @@ fn handle_ports_normal_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers
             }
         }
         KeyCode::Char('d') => {
-            if let Some(ref ports) = app.ports {
-                if ports.selected_count() > 0 {
-                    app.mode = AppMode::Confirm;
-                }
+            if let Some(ref ports) = app.ports
+                && ports.selected_count() > 0
+            {
+                app.mode = AppMode::Confirm;
             }
         }
         KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter

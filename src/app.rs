@@ -1,4 +1,4 @@
-use crate::config::{parse_port_filter, Config};
+use crate::config::{Config, parse_port_filter};
 use crate::ports::PortsState;
 use crate::scanner::{ScanMessage, ScanResult};
 use ratatui::widgets::ListState;
@@ -582,10 +582,10 @@ impl App {
                 return false;
             }
         }
-        if let Some(ref tf) = self.prune.type_filter {
-            if item.target_name != *tf {
-                return false;
-            }
+        if let Some(ref tf) = self.prune.type_filter
+            && item.target_name != *tf
+        {
+            return false;
         }
         true
     }
@@ -605,10 +605,10 @@ impl App {
                         return false;
                     }
                 }
-                if let Some(ref tf) = self.prune.type_filter {
-                    if item.target_name != *tf {
-                        return false;
-                    }
+                if let Some(ref tf) = self.prune.type_filter
+                    && item.target_name != *tf
+                {
+                    return false;
                 }
                 true
             })
@@ -918,11 +918,11 @@ impl App {
     }
 
     pub fn tree_scroll_bottom(&mut self, visible_height: u16) {
-        if let Some(item) = self.current_item() {
-            if let Some(data) = self.prune.tree_cache.get(&item.path) {
-                let total = data.entries.len() as u16;
-                self.prune.tree_scroll = total.saturating_sub(visible_height);
-            }
+        if let Some(item) = self.current_item()
+            && let Some(data) = self.prune.tree_cache.get(&item.path)
+        {
+            let total = data.entries.len() as u16;
+            self.prune.tree_scroll = total.saturating_sub(visible_height);
         }
     }
 
@@ -1156,10 +1156,11 @@ mod tests {
             },
         );
         assert!(!app.prune.tree_cache.is_empty());
-        assert!(app
-            .prune
-            .tree_cache
-            .contains_key(&std::path::PathBuf::from("/a/node_modules")));
+        assert!(
+            app.prune
+                .tree_cache
+                .contains_key(&std::path::PathBuf::from("/a/node_modules"))
+        );
     }
 
     #[test]

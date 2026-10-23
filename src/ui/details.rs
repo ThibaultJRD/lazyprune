@@ -1,11 +1,11 @@
 use crate::app::{App, FocusPanel};
 use crate::{format_duration, format_size};
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
-    Frame,
 };
 use std::time::SystemTime;
 
@@ -99,21 +99,21 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     ];
 
     // Top sub-dirs
-    if let Some(data) = tree_data {
-        if !data.top_dirs.is_empty() {
-            info_lines.push(Line::from(Span::styled(
-                "  Largest:",
-                Style::default().fg(Color::DarkGray),
-            )));
-            for (name, size) in &data.top_dirs {
-                info_lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("   {:>8}  ", format_size(*size)),
-                        Style::default().fg(Color::Yellow),
-                    ),
-                    Span::styled(format!("{}/", name), Style::default().fg(Color::White)),
-                ]));
-            }
+    if let Some(data) = tree_data
+        && !data.top_dirs.is_empty()
+    {
+        info_lines.push(Line::from(Span::styled(
+            "  Largest:",
+            Style::default().fg(Color::DarkGray),
+        )));
+        for (name, size) in &data.top_dirs {
+            info_lines.push(Line::from(vec![
+                Span::styled(
+                    format!("   {:>8}  ", format_size(*size)),
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::styled(format!("{}/", name), Style::default().fg(Color::White)),
+            ]));
         }
     }
 

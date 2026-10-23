@@ -2,9 +2,9 @@ use crate::targets::Target;
 use rayon::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
 use std::time::SystemTime;
 
 #[derive(Debug, Clone)]
@@ -150,10 +150,10 @@ fn scan_dir<'scope>(path: PathBuf, ctx: &'scope ScanContext, scope: &rayon::Scop
             if !t.matches_dir_name(name_str) {
                 return false;
             }
-            if let Some(ref indicator) = t.indicator {
-                if !path.join(indicator).exists() {
-                    return false;
-                }
+            if let Some(ref indicator) = t.indicator
+                && !path.join(indicator).exists()
+            {
+                return false;
             }
             true
         });

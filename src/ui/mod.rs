@@ -10,11 +10,11 @@ pub const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴"
 use crate::app::{App, AppMode, Tool};
 use crate::format_size;
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
-    Frame,
 };
 
 pub fn render(frame: &mut Frame, app: &mut App) {
