@@ -111,7 +111,8 @@ Default targets: `node_modules`, `Pods`, `.gradle`/`build`, `.pnpm-store`, `.yar
 ## How it works
 
 **Prune mode:**
-- Walks the filesystem, computes directory sizes in parallel with [rayon](https://crates.io/crates/rayon)
+- Walks the filesystem, computes disk usage in parallel with [rayon](https://crates.io/crates/rayon)
+- Sizes are what deleting a directory frees: hard-linked files also present elsewhere (e.g. a pnpm store) are shown as shared, not counted
 - Skips hidden directories unless they match a target
 - Never follows symlinks
 - Deletion requires explicit confirmation

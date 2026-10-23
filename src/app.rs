@@ -792,7 +792,7 @@ impl App {
 
             if *is_dir {
                 let child_path = path.join(name);
-                let (size, _) = crate::scanner::compute_dir_stats(&child_path);
+                let size = crate::scanner::compute_dir_stats(&child_path).size;
                 dir_sizes.push((name.clone(), size));
 
                 let mut subchildren: Vec<(String, bool)> = Vec::new();
@@ -1030,6 +1030,7 @@ mod tests {
             path: PathBuf::from(path),
             target_name: name.to_string(),
             size,
+            shared_size: 0,
             last_modified: None,
             file_count: 0,
             git_root: None,
@@ -1349,6 +1350,7 @@ mod tests {
             path: PathBuf::from("/a/node_modules"),
             target_name: "node_modules".to_string(),
             size: 500,
+            shared_size: 0,
             last_modified: None,
             file_count: 10,
             git_root: None,
@@ -1358,6 +1360,7 @@ mod tests {
             path: PathBuf::from("/b/node_modules"),
             target_name: "node_modules".to_string(),
             size: 200,
+            shared_size: 0,
             last_modified: None,
             file_count: 5,
             git_root: None,

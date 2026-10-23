@@ -91,12 +91,27 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::White),
             ),
         ]),
+    ];
+    if item.shared_size > 0 {
+        info_lines.push(Line::from(vec![
+            Span::styled("  Shared: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format_size(item.shared_size),
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::styled(
+                "  (hard links, not freed)",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+    }
+    info_lines.extend([
         Line::from(vec![
             Span::styled("  Modified: ", Style::default().fg(Color::DarkGray)),
             Span::styled(format!("{} ago", age), Style::default().fg(Color::White)),
         ]),
         Line::from(""),
-    ];
+    ]);
 
     // Top sub-dirs
     if let Some(data) = tree_data
@@ -330,4 +345,45 @@ fn render_group_details(
         .collect();
 
     frame.render_widget(Paragraph::new(visible_lines), tree_content_area);
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::app::App;
+    use crate::config::Config;
+    use crate::scanner::ScanResult;
+    use ratatui::{Terminal, backend::TestBackend};
+    use std::path::PathBuf;
+
+    fn render_details(shared_size: u64) -> String {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(rx, Config::load(None).unwrap());
+        app.prune.items = vec![ScanResult {
+            path: PathBuf::from("/p/node_modules"),
+            target_name: "node_modules".into(),
+            size: 0,
+            shared_size,
+            last_modified: None,
+            file_count: 1,
+            git_root: None,
+        }];
+        app.prune.selected = vec![false];
+        app.apply_filter();
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal.draw(|f| super::render(f, &app, f.area())).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn test_details_shows_shared_size() {
+        assert!(render_details(2 * 1024 * 1024).contains("Shared: 2.0 MB"));
+        assert!(!render_details(0).contains("Shared"));
+    }
 }

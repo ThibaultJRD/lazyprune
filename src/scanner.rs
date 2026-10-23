@@ -1,6 +1,8 @@
 use crate::targets::Target;
 use rayon::prelude::*;
+use std::collections::HashMap;
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,6 +14,7 @@ pub struct ScanResult {
     pub path: PathBuf,
     pub target_name: String,
     pub size: u64,
+    pub shared_size: u64,
     pub last_modified: Option<SystemTime>,
     pub file_count: u64,
     pub git_root: Option<PathBuf>,
@@ -28,29 +31,101 @@ pub enum ScanMessage {
     Error(String),
 }
 
-/// Compute total size and file count of a directory recursively.
+pub struct DirStats {
+    /// Disk usage freed by deleting the directory
+    pub size: u64,
+    /// Disk usage of hard-linked files that also live outside the directory
+    pub shared: u64,
+    pub files: u64,
+}
+
+/// Compute disk usage and file count of a directory recursively, like `du`.
 /// Uses rayon for parallelism on large directories.
-pub fn compute_dir_stats(path: &Path) -> (u64, u64) {
+pub fn compute_dir_stats(path: &Path) -> DirStats {
+    let walk = walk_dir(path);
+    let mut stats = DirStats {
+        size: walk.size,
+        shared: 0,
+        files: walk.files,
+    };
+    // A hard-linked file is only freed once all its links are gone
+    for link in walk.links.into_values() {
+        if link.seen >= link.nlink {
+            stats.size += link.bytes;
+        } else {
+            stats.shared += link.bytes;
+        }
+    }
+    stats
+}
+
+#[derive(Default)]
+struct Walk {
+    size: u64,
+    files: u64,
+    /// Files with several hard links, keyed by (device, inode)
+    links: HashMap<(u64, u64), Link>,
+}
+
+struct Link {
+    nlink: u64,
+    seen: u64,
+    bytes: u64,
+}
+
+impl Walk {
+    fn merge(mut self, other: Walk) -> Walk {
+        self.size += other.size;
+        self.files += other.files;
+        for (key, link) in other.links {
+            self.links
+                .entry(key)
+                .and_modify(|l| l.seen += link.seen)
+                .or_insert(link);
+        }
+        self
+    }
+}
+
+fn walk_dir(path: &Path) -> Walk {
     let entries: Vec<_> = match fs::read_dir(path) {
         Ok(rd) => rd.filter_map(|e| e.ok()).collect(),
-        Err(_) => return (0, 0),
+        Err(_) => return Walk::default(),
     };
 
     entries
         .par_iter()
         .map(|entry| {
-            let p = entry.path();
-            if p.is_symlink() {
-                return (0, 0);
+            let Ok(file_type) = entry.file_type() else {
+                return Walk::default();
+            };
+            if file_type.is_symlink() {
+                return Walk::default();
             }
-            if p.is_dir() {
-                compute_dir_stats(&p)
+            if file_type.is_dir() {
+                return walk_dir(&entry.path());
+            }
+            let mut walk = Walk {
+                files: 1,
+                ..Walk::default()
+            };
+            let Ok(meta) = entry.metadata() else {
+                return walk;
+            };
+            let bytes = meta.blocks() * 512;
+            if meta.nlink() > 1 {
+                let link = Link {
+                    nlink: meta.nlink(),
+                    seen: 1,
+                    bytes,
+                };
+                walk.links.insert((meta.dev(), meta.ino()), link);
             } else {
-                let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-                (size, 1)
+                walk.size = bytes;
             }
+            walk
         })
-        .reduce(|| (0, 0), |(s1, c1), (s2, c2)| (s1 + s2, c1 + c2))
+        .reduce(Walk::default, Walk::merge)
 }
 
 /// Walk up from `path` looking for a `.git` directory.
@@ -149,16 +224,17 @@ fn scan_dir<'scope>(path: PathBuf, ctx: &'scope ScanContext, scope: &rayon::Scop
         if let Some(target) = matched_target {
             // Found a target — compute stats in this branch (single-pass)
             // Nested targets are inherently excluded: we don't descend further
-            let (size, file_count) = compute_dir_stats(&entry_path);
+            let stats = compute_dir_stats(&entry_path);
             let last_modified = fs::metadata(&entry_path).and_then(|m| m.modified()).ok();
             let git_root = find_git_root(&entry_path);
 
             let _ = ctx.tx.send(ScanMessage::Found(ScanResult {
                 path: entry_path,
                 target_name: target.name.clone(),
-                size,
+                size: stats.size,
+                shared_size: stats.shared,
                 last_modified,
-                file_count,
+                file_count: stats.files,
                 git_root,
             }));
         } else {
@@ -346,16 +422,79 @@ mod tests {
         assert_eq!(results[0].target_name, "pnpm store");
     }
 
+    fn disk_usage(path: &Path) -> u64 {
+        use std::os::unix::fs::MetadataExt;
+        fs::metadata(path).unwrap().blocks() * 512
+    }
+
     #[test]
-    fn test_dir_size_computes_correctly() {
+    fn test_dir_size_counts_disk_blocks() {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(dir.path().join("sub")).unwrap();
-        fs::write(dir.path().join("a.txt"), "x".repeat(1000)).unwrap();
-        fs::write(dir.path().join("sub/b.txt"), "x".repeat(2000)).unwrap();
+        // A 1-byte file still occupies a full block on disk
+        fs::write(dir.path().join("a.txt"), "x").unwrap();
+        fs::write(dir.path().join("sub/b.txt"), "x".repeat(10_000)).unwrap();
+        let expected =
+            disk_usage(&dir.path().join("a.txt")) + disk_usage(&dir.path().join("sub/b.txt"));
 
-        let (size, count) = compute_dir_stats(dir.path());
-        assert_eq!(size, 3000);
-        assert_eq!(count, 2);
+        let stats = compute_dir_stats(dir.path());
+        assert_eq!(stats.size, expected);
+        assert_eq!(stats.files, 2);
+        assert_eq!(stats.shared, 0);
+    }
+
+    #[test]
+    fn test_hardlink_inside_dir_counted_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.bin");
+        fs::write(&a, "x".repeat(50_000)).unwrap();
+        fs::hard_link(&a, dir.path().join("b.bin")).unwrap();
+
+        let stats = compute_dir_stats(dir.path());
+        assert_eq!(stats.size, disk_usage(&a));
+        assert_eq!(stats.files, 2);
+        assert_eq!(stats.shared, 0);
+    }
+
+    #[test]
+    fn test_hardlink_outside_dir_is_shared() {
+        // pnpm-style: node_modules files hard-linked from a store elsewhere
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("store")).unwrap();
+        fs::create_dir_all(dir.path().join("project/node_modules")).unwrap();
+        let stored = dir.path().join("store/pkg.bin");
+        fs::write(&stored, "x".repeat(50_000)).unwrap();
+        fs::hard_link(&stored, dir.path().join("project/node_modules/pkg.bin")).unwrap();
+
+        // Deleting node_modules alone frees nothing: the store keeps the data
+        let stats = compute_dir_stats(&dir.path().join("project/node_modules"));
+        assert_eq!(stats.size, 0);
+        assert_eq!(stats.shared, disk_usage(&stored));
+    }
+
+    #[test]
+    fn test_scan_reports_shared_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("store")).unwrap();
+        fs::create_dir_all(root.join("app/node_modules")).unwrap();
+        fs::write(root.join("app/package.json"), "{}").unwrap();
+        let stored = root.join("store/pkg.bin");
+        fs::write(&stored, "x".repeat(50_000)).unwrap();
+        fs::hard_link(&stored, root.join("app/node_modules/pkg.bin")).unwrap();
+
+        let targets = vec![Target {
+            name: "node_modules".to_string(),
+            dirs: vec!["node_modules".to_string()],
+            indicators: vec!["package.json".to_string()],
+        }];
+        let (tx, rx) = std::sync::mpsc::channel();
+        scan(root.to_path_buf(), targets, vec![], false, tx);
+
+        let results = collect_scan_results(rx);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].size, 0);
+        assert_eq!(results[0].shared_size, disk_usage(&stored));
     }
 
     #[test]
