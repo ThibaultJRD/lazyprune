@@ -563,6 +563,16 @@ impl App {
                         }
                         // Deselect all items (errored items stay in list but unselected)
                         self.prune.selected.fill(false);
+                        // Drop types that no longer have items, and a filter on one of them
+                        let items = &self.prune.items;
+                        self.prune
+                            .available_types
+                            .retain(|t| items.iter().any(|i| &i.target_name == t));
+                        if let Some(ref tf) = self.prune.type_filter
+                            && !self.prune.available_types.contains(tf)
+                        {
+                            self.prune.type_filter = None;
+                        }
                         // path_index_map is stale after removal (indices shifted),
                         // but it's only used during scan which is already complete.
                         self.prune.path_index_map.clear();
@@ -1193,6 +1203,34 @@ mod tests {
         app.maybe_start_tree_scan();
         assert!(app.prune.tree_loading);
         assert_eq!(app.prune.tree_requested_path, None);
+    }
+
+    #[test]
+    fn test_deleting_last_item_of_a_type_drops_the_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let pods = dir.path().join("ios/Pods");
+        let nm = dir.path().join("web/node_modules");
+        std::fs::create_dir_all(&pods).unwrap();
+        std::fs::create_dir_all(&nm).unwrap();
+        let mut app = make_test_app(vec![
+            make_result("node_modules", nm.to_str().unwrap(), 1),
+            make_result("Pods", pods.to_str().unwrap(), 1),
+        ]);
+        app.prune.available_types = vec!["node_modules".into(), "Pods".into()];
+        app.prune.type_filter = Some("Pods".into());
+        app.prune.selected[1] = true;
+
+        app.start_deleting();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.mode == AppMode::Processing && std::time::Instant::now() < deadline {
+            app.poll_delete_results();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        assert!(!pods.exists());
+        assert_eq!(app.prune.available_types, vec!["node_modules".to_string()]);
+        assert_eq!(app.prune.type_filter, None);
+        assert_eq!(app.prune.filtered_indices.len(), 1);
     }
 
     #[test]
