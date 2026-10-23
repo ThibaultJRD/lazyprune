@@ -359,7 +359,7 @@ fn handle_prune_details_key(app: &mut App, code: KeyCode) {
         KeyCode::Char('j') | KeyCode::Down => app.tree_scroll_down(),
         KeyCode::Char('k') | KeyCode::Up => app.tree_scroll_up(),
         KeyCode::Char('g') => app.tree_scroll_top(),
-        KeyCode::Char('G') => app.tree_scroll_bottom(20),
+        KeyCode::Char('G') => app.tree_scroll_bottom(),
         KeyCode::Char('y') => app.copy_path_to_clipboard(),
         KeyCode::Tab => {
             let next = match app.active_tool {

@@ -143,6 +143,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let sep_line = "─".repeat(tree_area.width as usize);
     let [sep_area, tree_content_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(tree_area);
+    app.prune.tree_view_height.set(tree_content_area.height);
     frame.render_widget(
         Paragraph::new(Line::styled(sep_line, Style::default().fg(Color::DarkGray))),
         sep_area,
@@ -303,6 +304,7 @@ fn render_group_details(
     let sep_line = "─".repeat(tree_area.width as usize);
     let [sep_area, tree_content_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(tree_area);
+    app.prune.tree_view_height.set(tree_content_area.height);
     frame.render_widget(
         Paragraph::new(Line::styled(sep_line, Style::default().fg(Color::DarkGray))),
         sep_area,
@@ -379,6 +381,28 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect()
+    }
+
+    #[test]
+    fn test_details_records_tree_view_height() {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(rx, Config::load(None).unwrap());
+        app.prune.items = vec![ScanResult {
+            path: PathBuf::from("/p/node_modules"),
+            target_name: "node_modules".into(),
+            size: 0,
+            shared_size: 0,
+            last_modified: None,
+            file_count: 1,
+            git_root: None,
+        }];
+        app.prune.selected = vec![false];
+        app.apply_filter();
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        terminal.draw(|f| super::render(f, &app, f.area())).unwrap();
+        // 30 rows - 2 borders - 11 info rows - 1 separator
+        assert_eq!(app.prune.tree_view_height.get(), 16);
     }
 
     #[test]

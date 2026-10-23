@@ -125,6 +125,8 @@ pub struct PruneState {
     pub tree_rx: Option<mpsc::Receiver<(std::path::PathBuf, TreeData)>>,
     pub tree_loading: bool,
     pub tree_scroll: u16,
+    /// Rows of the tree preview, measured at render time
+    pub tree_view_height: std::cell::Cell<u16>,
     pub tree_debounce_at: Option<std::time::Instant>,
     pub tree_requested_path: Option<std::path::PathBuf>,
     pub path_index_map: std::collections::HashMap<std::path::PathBuf, usize>,
@@ -176,6 +178,7 @@ impl App {
                 tree_rx: None,
                 tree_loading: false,
                 tree_scroll: 0,
+                tree_view_height: std::cell::Cell::new(0),
                 tree_debounce_at: None,
                 tree_requested_path: None,
                 path_index_map: std::collections::HashMap::new(),
@@ -931,8 +934,26 @@ impl App {
         });
     }
 
+    /// Tree preview of the item or group under the cursor.
+    fn current_tree(&self) -> Option<&TreeData> {
+        match self.current_item() {
+            Some(item) => self.prune.tree_cache.get(&item.path),
+            None => self.prune.tree_cache.get(&self.current_group_info()?.path),
+        }
+    }
+
+    /// Scroll offset that shows the last tree line at the bottom of the view.
+    fn tree_max_scroll(&self) -> u16 {
+        let total = self.current_tree().map_or(0, |d| d.entries.len()) as u16;
+        total.saturating_sub(self.prune.tree_view_height.get())
+    }
+
     pub fn tree_scroll_down(&mut self) {
-        self.prune.tree_scroll = self.prune.tree_scroll.saturating_add(1);
+        self.prune.tree_scroll = self
+            .prune
+            .tree_scroll
+            .saturating_add(1)
+            .min(self.tree_max_scroll());
     }
 
     pub fn tree_scroll_up(&mut self) {
@@ -943,13 +964,8 @@ impl App {
         self.prune.tree_scroll = 0;
     }
 
-    pub fn tree_scroll_bottom(&mut self, visible_height: u16) {
-        if let Some(item) = self.current_item()
-            && let Some(data) = self.prune.tree_cache.get(&item.path)
-        {
-            let total = data.entries.len() as u16;
-            self.prune.tree_scroll = total.saturating_sub(visible_height);
-        }
+    pub fn tree_scroll_bottom(&mut self) {
+        self.prune.tree_scroll = self.tree_max_scroll();
     }
 
     pub fn copy_path_to_clipboard(&self) {
@@ -1042,6 +1058,58 @@ mod tests {
             file_count: 0,
             git_root: None,
         }
+    }
+
+    fn tree_with(n: usize) -> TreeData {
+        TreeData {
+            entries: (0..n)
+                .map(|i| TreeEntry {
+                    name: format!("e{i}"),
+                    is_dir: false,
+                    is_last: i == n - 1,
+                    parent_is_last: vec![],
+                })
+                .collect(),
+            top_dirs: vec![],
+            project_type: None,
+        }
+    }
+
+    #[test]
+    fn test_tree_scroll_stops_at_end() {
+        let mut app = make_test_app(vec![make_result("node_modules", "/a/node_modules", 1)]);
+        app.prune
+            .tree_cache
+            .insert(PathBuf::from("/a/node_modules"), tree_with(30));
+        app.prune.tree_view_height.set(10);
+        for _ in 0..100 {
+            app.tree_scroll_down();
+        }
+        assert_eq!(app.prune.tree_scroll, 20);
+    }
+
+    #[test]
+    fn test_tree_scroll_bottom_uses_view_height() {
+        let mut app = make_test_app(vec![make_result("node_modules", "/a/node_modules", 1)]);
+        app.prune
+            .tree_cache
+            .insert(PathBuf::from("/a/node_modules"), tree_with(30));
+        app.prune.tree_view_height.set(12);
+        app.tree_scroll_bottom();
+        assert_eq!(app.prune.tree_scroll, 18);
+    }
+
+    #[test]
+    fn test_tree_scroll_bottom_on_group() {
+        let mut app = make_test_app(vec![make_result("node_modules", "/a/node_modules", 1)]);
+        app.toggle_project_grouping();
+        app.prune.list_state.select(Some(0)); // group header of /a
+        app.prune
+            .tree_cache
+            .insert(PathBuf::from("/a"), tree_with(30));
+        app.prune.tree_view_height.set(10);
+        app.tree_scroll_bottom();
+        assert_eq!(app.prune.tree_scroll, 20);
     }
 
     #[test]
