@@ -217,6 +217,8 @@ impl App {
             None => return,
         };
 
+        // Grouped rows can't be appended in place: rebuild once per batch
+        let mut regroup = false;
         loop {
             match rx.try_recv() {
                 Ok(msg) => match msg {
@@ -230,7 +232,9 @@ impl App {
                         self.prune.selected.push(false);
                         // Append to filtered_indices if passes filter (no sort yet)
                         let item = &self.prune.items[idx];
-                        if self.item_passes_filter(item) {
+                        if self.prune.project_grouping {
+                            regroup = true;
+                        } else if self.item_passes_filter(item) {
                             self.prune.filtered_indices.push(idx);
                             // ratatui clears the selection while the list is empty
                             if self.prune.list_state.selected().is_none() {
@@ -259,6 +263,10 @@ impl App {
                     return;
                 }
             }
+        }
+
+        if regroup {
+            self.apply_filter();
         }
     }
 
@@ -1034,6 +1042,50 @@ mod tests {
             file_count: 0,
             git_root: None,
         }
+    }
+
+    #[test]
+    fn test_grouping_during_scan_keeps_projects_apart() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(rx, Config::load(None).unwrap());
+        tx.send(ScanMessage::Found(make_result(
+            "node_modules",
+            "/a/node_modules",
+            2,
+        )))
+        .unwrap();
+        app.poll_scan_results();
+        app.toggle_project_grouping();
+
+        // Another project's result streams in while grouping is on
+        tx.send(ScanMessage::Found(make_result(
+            "node_modules",
+            "/b/node_modules",
+            1,
+        )))
+        .unwrap();
+        app.poll_scan_results();
+        assert_eq!(app.prune.group_separators.len(), 2);
+
+        // Selecting project /a must not select /b
+        let a_header = app
+            .prune
+            .group_separators
+            .iter()
+            .copied()
+            .find(|&pos| {
+                app.prune.items[app.prune.filtered_indices[pos + 1]].path
+                    == std::path::Path::new("/a/node_modules")
+            })
+            .unwrap();
+        app.prune.list_state.select(Some(a_header));
+        app.toggle_selection();
+        let selected: Vec<_> = app
+            .selected_items()
+            .iter()
+            .map(|i| i.path.clone())
+            .collect();
+        assert_eq!(selected, vec![PathBuf::from("/a/node_modules")]);
     }
 
     #[test]
