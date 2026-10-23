@@ -18,22 +18,25 @@ fn shorten_path(path: Option<&std::path::Path>) -> String {
         None => return "?".to_string(),
     };
 
-    let path_str = path.to_string_lossy();
-    let home = dirs::home_dir().map(|h| h.to_string_lossy().to_string());
-
-    // Replace home dir with ~
-    let shortened = match &home {
-        Some(h) if path_str.starts_with(h.as_str()) => {
-            format!("~{}", &path_str[h.len()..])
-        }
-        _ => path_str.to_string(),
+    // Replace home dir with ~, comparing components so /home/alice2 is not home
+    let shortened = match dirs::home_dir().and_then(|h| path.strip_prefix(h).ok()) {
+        Some(rel) if rel.as_os_str().is_empty() => "~".to_string(),
+        Some(rel) => format!("~/{}", rel.display()),
+        None => path.display().to_string(),
     };
 
-    // If still too long, keep ~ prefix + last 2 components
+    // If still too long, keep the leading ~ or / + last 2 components
     let parts: Vec<&str> = shortened.split('/').filter(|s| !s.is_empty()).collect();
     if parts.len() > 4 {
+        let lead = if shortened.starts_with('~') {
+            "~/"
+        } else if shortened.starts_with('/') {
+            "/"
+        } else {
+            ""
+        };
         let tail = &parts[parts.len() - 2..];
-        format!("~/…/{}", tail.join("/"))
+        format!("{lead}…/{}", tail.join("/"))
     } else {
         shortened
     }
@@ -195,6 +198,31 @@ fn age_color(last_modified: Option<SystemTime>) -> Color {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    fn home() -> std::path::PathBuf {
+        dirs::home_dir().unwrap()
+    }
+
+    #[test]
+    fn test_shorten_path_outside_home_has_no_tilde() {
+        let path = std::path::Path::new("/opt/work/clients/acme/app");
+        assert_eq!(shorten_path(Some(path)), "/…/acme/app");
+        let path = std::path::Path::new("/opt/work/app");
+        assert_eq!(shorten_path(Some(path)), "/opt/work/app");
+    }
+
+    #[test]
+    fn test_shorten_path_home_sibling_is_not_home() {
+        // "/Users/me2" starts with the string "/Users/me" but is not inside it
+        let sibling = std::path::PathBuf::from(format!("{}2/app", home().display()));
+        assert_eq!(shorten_path(Some(&sibling)), sibling.display().to_string());
+    }
+
+    #[test]
+    fn test_shorten_path_inside_home() {
+        assert_eq!(shorten_path(Some(&home().join("a/b"))), "~/a/b");
+        assert_eq!(shorten_path(Some(&home().join("a/b/c/d"))), "~/…/c/d");
+    }
 
     #[test]
     fn test_age_color_none() {
