@@ -306,9 +306,15 @@ pub fn render_kill_confirm(frame: &mut Frame, app: &App) {
         Span::raw(" Cancel"),
     ]));
 
+    // A process listening on several selected ports is killed once
+    let processes = selected
+        .iter()
+        .map(|p| p.pid)
+        .collect::<std::collections::HashSet<_>>()
+        .len();
     let title = format!(
-        " Kill {count} process{}? ",
-        if count == 1 { "" } else { "es" }
+        " Kill {processes} process{}? ",
+        if processes == 1 { "" } else { "es" }
     );
 
     let max_line_len = lines
@@ -578,27 +584,43 @@ mod tests {
         render_screen(&mut app, 20, 30);
     }
 
-    #[test]
-    fn test_kill_confirm_fits_narrow_terminal() {
+    fn kill_confirm_app(ports_and_pids: &[(u16, u32)]) -> App {
         let mut ports = PortsState::new();
-        ports.items = vec![PortInfo {
-            port: 3000,
-            protocol: Protocol::Tcp,
-            pid: 1,
-            process_name: "node".into(),
-            command: String::new(),
-            user: "me".into(),
-            state: "LISTEN".into(),
-            connections: 0,
-        }];
-        ports.selected = vec![true];
+        ports.items = ports_and_pids
+            .iter()
+            .map(|&(port, pid)| PortInfo {
+                port,
+                protocol: Protocol::Tcp,
+                pid,
+                process_name: "node".into(),
+                command: String::new(),
+                user: "me".into(),
+                state: "LISTEN".into(),
+                connections: 0,
+            })
+            .collect();
+        ports.selected = vec![true; ports_and_pids.len()];
         ports.scan_complete = true;
         ports.apply_filter();
         let mut app = test_app();
         app.ports = Some(ports);
         app.active_tool = Tool::Ports;
         app.mode = AppMode::Confirm;
+        app
+    }
 
+    #[test]
+    fn test_kill_confirm_fits_narrow_terminal() {
+        let mut app = kill_confirm_app(&[(3000, 1)]);
         assert!(render_screen(&mut app, 50, 30).contains("Kill 1 process?"));
+    }
+
+    #[test]
+    fn test_kill_confirm_counts_processes_not_ports() {
+        // One process listening on two selected ports
+        let mut app = kill_confirm_app(&[(3000, 7), (3001, 7)]);
+        assert!(render_screen(&mut app, 100, 30).contains("Kill 1 process?"));
+        let mut app = kill_confirm_app(&[(3000, 7), (3001, 8)]);
+        assert!(render_screen(&mut app, 100, 30).contains("Kill 2 processes?"));
     }
 }
