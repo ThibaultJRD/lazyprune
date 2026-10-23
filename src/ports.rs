@@ -461,6 +461,8 @@ pub struct PortEntry {
     pub process_name: String,
     pub user: String,
     pub state: String,
+    /// NAME has a remote end (`local->remote`)
+    pub connected: bool,
 }
 
 /// Public struct representing a unique port with aggregated connection info.
@@ -563,43 +565,47 @@ pub fn parse_lsof_line(line: &str) -> Option<PortEntry> {
         process_name,
         user,
         state,
+        connected: name.contains("->"),
     })
 }
 
-/// Deduplicates `PortEntry` list by `(port, protocol)`.
-///
-/// Keeps the entry with the LISTEN state when available. Tracks total
-/// connection count across all entries for the same (port, protocol) key.
+/// Keeps only bound sockets (TCP LISTEN, unconnected UDP), deduplicated by
+/// `(port, protocol, pid)` so IPv4/IPv6 listeners of one process merge while
+/// distinct processes on the same port stay separate. Established TCP
+/// connections are counted on their local port.
 pub fn dedup_port_entries(entries: Vec<PortEntry>) -> Vec<PortInfo> {
-    let mut map: HashMap<(u16, Protocol), PortInfo> = HashMap::new();
+    let mut map: HashMap<(u16, Protocol, u32), PortInfo> = HashMap::new();
+    let mut connections: HashMap<(u16, Protocol), usize> = HashMap::new();
 
     for entry in entries {
-        let key = (entry.port, entry.protocol);
-        match map.entry(key) {
-            std::collections::hash_map::Entry::Vacant(v) => {
-                v.insert(PortInfo {
-                    port: entry.port,
-                    protocol: entry.protocol,
-                    pid: entry.pid,
-                    process_name: entry.process_name,
-                    command: String::new(),
-                    user: entry.user,
-                    state: entry.state,
-                    connections: 1,
-                });
+        let bound = match entry.protocol {
+            Protocol::Tcp => entry.state == "LISTEN",
+            Protocol::Udp => !entry.connected,
+        };
+        if !bound {
+            if entry.protocol == Protocol::Tcp && entry.connected {
+                *connections.entry((entry.port, entry.protocol)).or_default() += 1;
             }
-            std::collections::hash_map::Entry::Occupied(mut o) => {
-                let existing = o.get_mut();
-                existing.connections += 1;
-                // Prefer the LISTEN state entry as the canonical one
-                if entry.state == "LISTEN" && existing.state != "LISTEN" {
-                    existing.pid = entry.pid;
-                    existing.process_name = entry.process_name;
-                    existing.user = entry.user;
-                    existing.state = entry.state;
-                }
-            }
+            continue;
         }
+        map.entry((entry.port, entry.protocol, entry.pid))
+            .or_insert(PortInfo {
+                port: entry.port,
+                protocol: entry.protocol,
+                pid: entry.pid,
+                process_name: entry.process_name,
+                command: String::new(),
+                user: entry.user,
+                state: entry.state,
+                connections: 0,
+            });
+    }
+
+    for info in map.values_mut() {
+        info.connections = connections
+            .get(&(info.port, info.protocol))
+            .copied()
+            .unwrap_or(0);
     }
 
     map.into_values().collect()
@@ -728,40 +734,63 @@ mod tests {
         let info = result.unwrap();
         assert_eq!(info.port, 3000);
         assert_eq!(info.state, "ESTABLISHED");
+        assert!(info.connected);
+    }
+
+    fn entry(port: u16, protocol: Protocol, pid: u32, state: &str, connected: bool) -> PortEntry {
+        PortEntry {
+            port,
+            protocol,
+            pid,
+            process_name: "node".into(),
+            user: "me".into(),
+            state: state.into(),
+            connected,
+        }
     }
 
     #[test]
     fn test_dedup_ports() {
         let entries = vec![
-            PortEntry {
-                port: 3000,
-                protocol: Protocol::Tcp,
-                pid: 123,
-                process_name: "node".into(),
-                user: "me".into(),
-                state: "LISTEN".into(),
-            },
-            PortEntry {
-                port: 3000,
-                protocol: Protocol::Tcp,
-                pid: 123,
-                process_name: "node".into(),
-                user: "me".into(),
-                state: "ESTABLISHED".into(),
-            },
-            PortEntry {
-                port: 3000,
-                protocol: Protocol::Tcp,
-                pid: 124,
-                process_name: "node".into(),
-                user: "me".into(),
-                state: "ESTABLISHED".into(),
-            },
+            entry(3000, Protocol::Tcp, 123, "LISTEN", false),
+            entry(3000, Protocol::Tcp, 123, "ESTABLISHED", true),
+            entry(3000, Protocol::Tcp, 124, "ESTABLISHED", true),
         ];
         let deduped = dedup_port_entries(entries);
         assert_eq!(deduped.len(), 1);
         assert_eq!(deduped[0].state, "LISTEN");
-        assert_eq!(deduped[0].connections, 3);
+        assert_eq!(deduped[0].pid, 123);
+        assert_eq!(deduped[0].connections, 2);
+    }
+
+    #[test]
+    fn test_dedup_ignores_outgoing_connections() {
+        // Ephemeral local port of an outgoing connection is not a port to kill
+        let entries = vec![entry(64231, Protocol::Tcp, 962, "ESTABLISHED", true)];
+        assert!(dedup_port_entries(entries).is_empty());
+    }
+
+    #[test]
+    fn test_dedup_keeps_distinct_processes_on_same_port() {
+        let entries = vec![
+            entry(3000, Protocol::Tcp, 1, "LISTEN", false), // IPv4
+            entry(3000, Protocol::Tcp, 1, "LISTEN", false), // IPv6, same process
+            entry(3000, Protocol::Tcp, 2, "LISTEN", false), // another process
+        ];
+        let mut pids: Vec<u32> = dedup_port_entries(entries).iter().map(|p| p.pid).collect();
+        pids.sort();
+        assert_eq!(pids, vec![1, 2]);
+    }
+
+    #[test]
+    fn test_dedup_keeps_bound_udp_only() {
+        let entries = vec![
+            entry(5353, Protocol::Udp, 10, "", false),
+            entry(58000, Protocol::Udp, 11, "", true), // connected (e.g. QUIC client)
+        ];
+        let deduped = dedup_port_entries(entries);
+        assert_eq!(deduped.len(), 1);
+        assert_eq!(deduped[0].port, 5353);
     }
 
     #[test]

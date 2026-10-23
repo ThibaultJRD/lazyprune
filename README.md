@@ -117,7 +117,7 @@ Default targets: `node_modules`, `Pods`, `.gradle`/`build`, `.pnpm-store`, `.yar
 - Deletion requires explicit confirmation
 
 **Ports mode:**
-- Lists open ports via `lsof`, deduplicates by port/protocol
+- Lists listening ports (TCP `LISTEN`, bound UDP) via `lsof`, one row per port/protocol/process
 - Dev filter hides system ports, showing only your dev servers
 - Kill sends SIGTERM, then SIGKILL after 500ms if the process survives
 - Kill requires explicit confirmation
