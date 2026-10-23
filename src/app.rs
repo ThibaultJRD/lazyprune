@@ -895,7 +895,8 @@ impl App {
             None => return,
         };
 
-        if std::time::Instant::now() < deadline {
+        // Keep the request pending until the running scan ends
+        if std::time::Instant::now() < deadline || self.prune.tree_loading {
             return;
         }
 
@@ -906,10 +907,6 @@ impl App {
         self.prune.tree_debounce_at = None;
 
         if self.prune.tree_cache.contains_key(&path) {
-            return;
-        }
-
-        if self.prune.tree_loading {
             return;
         }
 
@@ -1035,6 +1032,25 @@ mod tests {
             file_count: 0,
             git_root: None,
         }
+    }
+
+    #[test]
+    fn test_tree_request_waits_for_running_scan() {
+        let mut app = make_test_app(vec![]);
+        let b = PathBuf::from("/b/node_modules");
+        // A tree scan for another item is still running when B's debounce expires
+        app.prune.tree_loading = true;
+        app.prune.tree_requested_path = Some(b.clone());
+        app.prune.tree_debounce_at = Some(std::time::Instant::now());
+
+        app.maybe_start_tree_scan();
+        assert_eq!(app.prune.tree_requested_path, Some(b));
+
+        // Once the running scan ends, B's scan starts
+        app.prune.tree_loading = false;
+        app.maybe_start_tree_scan();
+        assert!(app.prune.tree_loading);
+        assert_eq!(app.prune.tree_requested_path, None);
     }
 
     #[test]
