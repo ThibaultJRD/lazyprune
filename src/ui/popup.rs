@@ -18,15 +18,6 @@ fn popup_area(area: Rect, width: u16, height: u16) -> Rect {
     area
 }
 
-fn shorten_path(path: &std::path::Path) -> String {
-    if let Some(home) = dirs::home_dir()
-        && let Ok(stripped) = path.strip_prefix(&home)
-    {
-        return format!("~/{}", stripped.display());
-    }
-    path.display().to_string()
-}
-
 pub fn render_confirm(frame: &mut Frame, app: &App) {
     let selected = app.selected_items();
     let count = selected.len();
@@ -46,7 +37,7 @@ pub fn render_confirm(frame: &mut Frame, app: &App) {
             ));
             break;
         }
-        let short = shorten_path(&item.path);
+        let short = super::tilde_path(&item.path);
         lines.push(Line::styled(
             format!("  {}", short),
             Style::default().fg(Color::White),
@@ -114,7 +105,7 @@ pub fn render_processing(frame: &mut Frame, app: &App) {
     let current = if app.prune.delete_current_path.is_empty() {
         String::new()
     } else {
-        let short = shorten_path(std::path::Path::new(&app.prune.delete_current_path));
+        let short = super::tilde_path(std::path::Path::new(&app.prune.delete_current_path));
         format!("  {}", short)
     };
 

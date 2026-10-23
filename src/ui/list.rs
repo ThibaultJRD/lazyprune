@@ -18,12 +18,7 @@ fn shorten_path(path: Option<&std::path::Path>) -> String {
         None => return "?".to_string(),
     };
 
-    // Replace home dir with ~, comparing components so /home/alice2 is not home
-    let shortened = match dirs::home_dir().and_then(|h| path.strip_prefix(h).ok()) {
-        Some(rel) if rel.as_os_str().is_empty() => "~".to_string(),
-        Some(rel) => format!("~/{}", rel.display()),
-        None => path.display().to_string(),
-    };
+    let shortened = super::tilde_path(path);
 
     // If still too long, keep the leading ~ or / + last 2 components
     let parts: Vec<&str> = shortened.split('/').filter(|s| !s.is_empty()).collect();

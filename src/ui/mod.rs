@@ -7,6 +7,16 @@ pub mod ports_list;
 
 pub const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/// Display `path` with the home dir replaced by `~`, compared by components
+/// so that /home/alice2 is not shown as inside /home/alice.
+pub fn tilde_path(path: &std::path::Path) -> String {
+    match dirs::home_dir().and_then(|h| path.strip_prefix(h).ok()) {
+        Some(rel) if rel.as_os_str().is_empty() => "~".to_string(),
+        Some(rel) => format!("~/{}", rel.display()),
+        None => path.display().to_string(),
+    }
+}
+
 use crate::app::{App, AppMode, Tool};
 use crate::format_size;
 use ratatui::{

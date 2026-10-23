@@ -48,14 +48,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Layout::vertical([Constraint::Length(info_height), Constraint::Fill(1)]).areas(inner);
 
     // --- Enriched info section ---
-    let path_display = item.path.to_string_lossy();
-    let home = dirs::home_dir().map(|h| h.to_string_lossy().to_string());
-    let path_short = match &home {
-        Some(h) if path_display.starts_with(h.as_str()) => {
-            format!("~{}", &path_display[h.len()..])
-        }
-        _ => path_display.to_string(),
-    };
+    let path_short = super::tilde_path(&item.path);
 
     let age = item
         .last_modified
@@ -236,14 +229,7 @@ fn render_group_details(
     inner: Rect,
     group_info: &crate::app::GroupInfo,
 ) {
-    let home = dirs::home_dir().map(|h| h.to_string_lossy().to_string());
-    let path_display = group_info.path.to_string_lossy();
-    let path_short = match &home {
-        Some(h) if path_display.starts_with(h.as_str()) => {
-            format!("~{}", &path_display[h.len()..])
-        }
-        _ => path_display.to_string(),
-    };
+    let path_short = super::tilde_path(&group_info.path);
 
     let info_height = (7 + group_info.targets.len()) as u16;
     let [info_area, tree_area] =
@@ -358,10 +344,14 @@ mod tests {
     use std::path::PathBuf;
 
     fn render_details(shared_size: u64) -> String {
+        render_details_of("/p/node_modules", shared_size, false)
+    }
+
+    fn render_details_of(path: &str, shared_size: u64, grouped: bool) -> String {
         let (_tx, rx) = std::sync::mpsc::channel();
         let mut app = App::new(rx, Config::load(None).unwrap());
         app.prune.items = vec![ScanResult {
-            path: PathBuf::from("/p/node_modules"),
+            path: PathBuf::from(path),
             target_name: "node_modules".into(),
             size: 0,
             shared_size,
@@ -370,9 +360,10 @@ mod tests {
             git_root: None,
         }];
         app.prune.selected = vec![false];
+        app.prune.project_grouping = grouped;
         app.apply_filter();
 
-        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
         terminal.draw(|f| super::render(f, &app, f.area())).unwrap();
         terminal
             .backend()
@@ -403,6 +394,21 @@ mod tests {
         terminal.draw(|f| super::render(f, &app, f.area())).unwrap();
         // 30 rows - 2 borders - 11 info rows - 1 separator
         assert_eq!(app.prune.tree_view_height.get(), 16);
+    }
+
+    #[test]
+    fn test_details_home_sibling_is_not_home() {
+        // "/Users/me2" starts with the string "/Users/me" but is not inside it
+        let home = dirs::home_dir().unwrap();
+        let path = format!("{}2/app/node_modules", home.display());
+        let item_view = render_details_of(&path, 0, false);
+        assert!(item_view.contains(&path), "item view");
+        let group_view = render_details_of(&path, 0, true);
+        assert!(
+            group_view.contains(&format!("{}2/app", home.display())),
+            "group view"
+        );
+        assert!(!item_view.contains("~2") && !group_view.contains("~2"));
     }
 
     #[test]
