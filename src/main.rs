@@ -201,8 +201,8 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                         && let Event::Key(key) = event::read()?
                         && key.kind == crossterm::event::KeyEventKind::Press
                     {
-                        // Consume keys during deletion
-                        let _ = key;
+                        // Only Ctrl+C is handled during deletion
+                        handle_key(app, key);
                     }
                     continue;
                 }
@@ -224,7 +224,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
                             && let Event::Key(key) = event::read()?
                             && key.kind == crossterm::event::KeyEventKind::Press
                         {
-                            let _ = key;
+                            handle_key(app, key);
                         }
                         if done {
                             app.mode = AppMode::Normal;
@@ -255,6 +255,10 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) {
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        app.exit = true;
+        return;
+    }
     match app.active_tool {
         Tool::Prune => handle_prune_key(app, key),
         Tool::Ports => handle_ports_key(app, key),
@@ -741,5 +745,27 @@ mod tests {
         use clap::Parser;
         let result = Cli::try_parse_from(["lazyprune", "-D", "src", "-t", "node"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_ctrl_c_quits_from_any_mode() {
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        for tool in [Tool::Prune, Tool::Ports] {
+            for mode in [
+                AppMode::Normal,
+                AppMode::Filter,
+                AppMode::SubFilter,
+                AppMode::Confirm,
+                AppMode::Processing,
+                AppMode::Help,
+            ] {
+                let (_tx, rx) = mpsc::channel();
+                let mut app = App::new(rx, Config::load(None).unwrap());
+                app.active_tool = tool;
+                app.mode = mode;
+                handle_key(&mut app, ctrl_c);
+                assert!(app.exit, "Ctrl+C should quit ({tool:?}, {mode:?})");
+            }
+        }
     }
 }

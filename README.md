@@ -57,7 +57,7 @@ lazyprune --init-config              # Generate config at ~/.config/lazyprune/co
 | `l/→/Enter` | Open details panel |
 | `h/←/Esc` | Back to list |
 | `?` | Help |
-| `q` | Quit |
+| `q` / `Ctrl+c` | Quit |
 
 ### Prune mode
 

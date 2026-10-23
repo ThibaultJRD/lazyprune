@@ -211,7 +211,7 @@ pub fn render_help(frame: &mut Frame, app: &App) {
             help_line("r", "Refresh port list"),
             help_line("Tab", "Switch to Prune mode"),
             help_line("?", "Toggle help"),
-            help_line("q", "Quit"),
+            help_line("q/Ctrl+c", "Quit"),
             Line::raw(""),
         ];
 
@@ -241,7 +241,7 @@ pub fn render_help(frame: &mut Frame, app: &App) {
             help_line("y", "Copy path (in details)"),
             help_line("Tab", "Switch to Ports mode"),
             help_line("?", "Toggle help"),
-            help_line("q", "Quit"),
+            help_line("q/Ctrl+c", "Quit"),
             Line::raw(""),
         ]
     };
