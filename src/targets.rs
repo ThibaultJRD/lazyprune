@@ -1,14 +1,20 @@
 use serde::{Deserialize, Deserializer};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct Target {
     pub name: String,
+    /// Directory names searched for while walking the tree
+    #[serde(default)]
     pub dirs: Vec<String>,
     /// Files confirming a real target when one of them exists in the project dir.
     /// A single string or a list in TOML; empty means always match.
     #[serde(default, rename = "indicator", deserialize_with = "one_or_many")]
     pub indicators: Vec<String>,
+    /// Fixed locations (e.g. global caches) checked directly instead of walked;
+    /// `~` expands to the home dir
+    #[serde(default)]
+    pub paths: Vec<String>,
 }
 
 fn one_or_many<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<String>, D::Error> {
@@ -25,6 +31,14 @@ fn one_or_many<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<String>
 }
 
 impl Target {
+    /// `paths` with `~` expanded
+    pub fn fixed_paths(&self) -> Vec<PathBuf> {
+        self.paths
+            .iter()
+            .map(|p| crate::config::expand_home(p))
+            .collect()
+    }
+
     /// True if `name` is a component of one of `dirs` (e.g. ".yarn" for ".yarn/cache"),
     /// so the scanner must descend into it even when hidden.
     pub fn mentions_dir(&self, name: &str) -> bool {
@@ -59,6 +73,7 @@ mod tests {
             name: "node_modules".to_string(),
             dirs: vec!["node_modules".to_string()],
             indicators: vec![],
+            paths: vec![],
         };
         assert!(target.matches(Path::new("/p/node_modules")));
         assert!(!target.matches(Path::new("/p/node_module")));
@@ -70,6 +85,7 @@ mod tests {
             name: "Gradle cache".to_string(),
             dirs: vec![".gradle".to_string(), "build".to_string()],
             indicators: vec![],
+            paths: vec![],
         };
         assert!(target.matches(Path::new("/p/.gradle")));
         assert!(target.matches(Path::new("/p/build")));
@@ -84,6 +100,7 @@ mod tests {
             name: "yarn".to_string(),
             dirs: vec![".yarn/cache".to_string()],
             indicators: vec!["a.toml".to_string(), "b.toml".to_string()],
+            paths: vec![],
         };
         // Indicator is looked up next to `.yarn`, not inside it
         assert!(target.matches(&dir.path().join(".yarn/cache")));
@@ -96,10 +113,35 @@ mod tests {
             name: "yarn".to_string(),
             dirs: vec![".yarn/cache".to_string()],
             indicators: vec![],
+            paths: vec![],
         };
         assert!(target.mentions_dir(".yarn"));
         assert!(target.mentions_dir("cache"));
         assert!(!target.mentions_dir(".cache"));
+    }
+
+    #[test]
+    fn test_paths_are_optional_and_dirs_too() {
+        let fixed: Target = toml::from_str("name = 'npm'\npaths = ['~/.npm/_cacache']").unwrap();
+        assert!(fixed.dirs.is_empty());
+        assert_eq!(fixed.paths, vec!["~/.npm/_cacache"]);
+        let walked: Target = toml::from_str("name = 'a'\ndirs = ['x']").unwrap();
+        assert!(walked.paths.is_empty());
+    }
+
+    #[test]
+    fn test_fixed_paths_expand_home() {
+        let home = dirs::home_dir().unwrap();
+        let target = Target {
+            name: "npm".to_string(),
+            dirs: vec![],
+            indicators: vec![],
+            paths: vec!["~/.npm/_cacache".to_string(), "/abs/cache".to_string()],
+        };
+        assert_eq!(
+            target.fixed_paths(),
+            vec![home.join(".npm/_cacache"), PathBuf::from("/abs/cache")]
+        );
     }
 
     #[test]

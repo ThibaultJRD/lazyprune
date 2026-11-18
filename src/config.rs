@@ -56,6 +56,17 @@ fn default_root() -> String {
     "~".to_string()
 }
 
+/// Expand a leading `~` (alone or followed by `/`) to the home dir
+pub fn expand_home(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix('~')
+        && (rest.is_empty() || rest.starts_with('/'))
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(rest.trim_start_matches('/'));
+    }
+    PathBuf::from(path)
+}
+
 /// ~/.config on macOS (instead of ~/Library/Application Support), XDG config dir elsewhere
 fn config_dir() -> Option<PathBuf> {
     if cfg!(target_os = "macos") {
@@ -96,13 +107,7 @@ impl Config {
 
     /// Resolve root path (expand ~)
     pub fn root_path(&self) -> PathBuf {
-        if let Some(rest) = self.root.strip_prefix('~')
-            && (rest.is_empty() || rest.starts_with('/'))
-            && let Some(home) = dirs::home_dir()
-        {
-            return home.join(rest.trim_start_matches('/'));
-        }
-        PathBuf::from(&self.root)
+        expand_home(&self.root)
     }
 
     /// Return default config as string for --init-config
@@ -215,6 +220,29 @@ mod tests {
         assert_eq!(root("~/Projects"), home.join("Projects"));
         // Not a home reference: kept as is
         assert_eq!(root("~foo"), PathBuf::from("~foo"));
+    }
+
+    #[test]
+    fn test_default_fixed_paths_stay_inside_home() {
+        // Deleting a default cache must never reach the home dir itself or outside it
+        let home = dirs::home_dir().unwrap();
+        let config = Config::load(None).unwrap();
+        let paths: Vec<PathBuf> = config
+            .targets
+            .iter()
+            .flat_map(|t| t.fixed_paths())
+            .collect();
+        assert!(!paths.is_empty());
+        for path in paths {
+            let no_parent = path
+                .components()
+                .all(|c| c != std::path::Component::ParentDir);
+            assert!(
+                path.starts_with(&home) && path != home && no_parent,
+                "{}",
+                path.display()
+            );
+        }
     }
 
     #[test]

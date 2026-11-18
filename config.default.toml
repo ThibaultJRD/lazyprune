@@ -21,6 +21,12 @@ skip = [
     ".orbstack",
 ]
 
+# Targets:
+# - dirs: directory names searched for while walking (nested like ".yarn/cache" work)
+# - indicator: file(s), one of which must exist in the project dir for a `dirs` match
+# - paths: fixed locations (e.g. global caches) checked directly, never walked;
+#   shown only when under the scan root, missing ones are ignored
+
 [[targets]]
 name = "node_modules"
 dirs = ["node_modules"]
@@ -39,11 +45,13 @@ indicator = ["build.gradle", "build.gradle.kts"]
 [[targets]]
 name = "pnpm store"
 dirs = [".pnpm-store"]
+paths = ["~/Library/pnpm/store", "~/.local/share/pnpm/store"]
 
 [[targets]]
 name = "Yarn cache"
 dirs = [".yarn/cache"]
 indicator = ".yarnrc.yml"
+paths = ["~/.yarn/berry/cache", "~/Library/Caches/Yarn", "~/.cache/yarn"]
 
 [[targets]]
 name = "Next.js build"
@@ -64,6 +72,37 @@ indicator = "Cargo.toml"
 name = "dist"
 dirs = ["dist"]
 indicator = "package.json"
+
+# --- Global caches (re-downloaded or rebuilt on demand) ---
+# Mac and Linux locations side by side
+
+[[targets]]
+name = "npm cache"
+paths = ["~/.npm/_cacache"]
+
+[[targets]]
+name = "pnpm cache"
+paths = ["~/Library/Caches/pnpm", "~/.cache/pnpm"]
+
+[[targets]]
+name = "Bun cache"
+paths = ["~/.bun/install/cache"]
+
+[[targets]]
+name = "Cargo cache"
+paths = ["~/.cargo/registry", "~/.cargo/git"]
+
+[[targets]]
+name = "Homebrew cache"
+paths = ["~/Library/Caches/Homebrew", "~/.cache/Homebrew"]
+
+[[targets]]
+name = "CocoaPods cache"
+paths = ["~/Library/Caches/CocoaPods"]
+
+[[targets]]
+name = "Xcode DerivedData"
+paths = ["~/Library/Developer/Xcode/DerivedData"]
 
 # --- Ports mode ---
 [ports]

@@ -142,6 +142,8 @@ struct ScanContext {
     include_hidden: bool,
     tx: mpsc::Sender<ScanMessage>,
     dirs_scanned: Arc<AtomicU64>,
+    /// Fixed target locations with their target name: reported directly, never walked
+    fixed: Vec<(PathBuf, String)>,
 }
 
 /// Run the scan synchronously. Sends results via channel as they're found.
@@ -153,6 +155,10 @@ pub fn scan(
     include_hidden: bool,
     tx: mpsc::Sender<ScanMessage>,
 ) {
+    let fixed = targets
+        .iter()
+        .flat_map(|t| t.fixed_paths().into_iter().map(|p| (p, t.name.clone())))
+        .collect();
     let ctx = ScanContext {
         root: root.clone(),
         targets,
@@ -160,13 +166,39 @@ pub fn scan(
         include_hidden,
         tx,
         dirs_scanned: Arc::new(AtomicU64::new(0)),
+        fixed,
     };
 
     rayon::scope(|s| {
+        for (path, name) in &ctx.fixed {
+            // symlink_metadata: a symlink is never followed, like in the walk
+            let is_real_dir = fs::symlink_metadata(path).is_ok_and(|m| m.is_dir());
+            if path.starts_with(&ctx.root) && is_real_dir {
+                let ctx = &ctx;
+                s.spawn(move |_| report(path.clone(), name, ctx));
+            }
+        }
         scan_dir(root, &ctx, s);
     });
 
     let _ = ctx.tx.send(ScanMessage::Complete);
+}
+
+/// Compute the stats of a found target and send it
+fn report(path: PathBuf, target_name: &str, ctx: &ScanContext) {
+    let stats = compute_dir_stats(&path);
+    let last_modified = fs::metadata(&path).and_then(|m| m.modified()).ok();
+    let git_root = find_git_root(&path);
+
+    let _ = ctx.tx.send(ScanMessage::Found(ScanResult {
+        path,
+        target_name: target_name.to_string(),
+        size: stats.size,
+        shared_size: stats.shared,
+        last_modified,
+        file_count: stats.files,
+        git_root,
+    }));
 }
 
 fn scan_dir<'scope>(path: PathBuf, ctx: &'scope ScanContext, scope: &rayon::Scope<'scope>) {
@@ -191,9 +223,15 @@ fn scan_dir<'scope>(path: PathBuf, ctx: &'scope ScanContext, scope: &rayon::Scop
             None => continue,
         };
 
+        let entry_path = entry.path();
+
+        // Fixed paths are reported by `scan`, never walked into
+        if ctx.fixed.iter().any(|(p, _)| *p == entry_path) {
+            continue;
+        }
+
         // Skip list check: entries without '/' match by dir name,
         // entries with '/' match by relative path from root
-        let entry_path = entry.path();
         if ctx.skip.iter().any(|s| {
             if s.contains('/') {
                 entry_path
@@ -220,19 +258,7 @@ fn scan_dir<'scope>(path: PathBuf, ctx: &'scope ScanContext, scope: &rayon::Scop
         if let Some(target) = matched_target {
             // Found a target — compute stats in this branch (single-pass)
             // Nested targets are inherently excluded: we don't descend further
-            let stats = compute_dir_stats(&entry_path);
-            let last_modified = fs::metadata(&entry_path).and_then(|m| m.modified()).ok();
-            let git_root = find_git_root(&entry_path);
-
-            let _ = ctx.tx.send(ScanMessage::Found(ScanResult {
-                path: entry_path,
-                target_name: target.name.clone(),
-                size: stats.size,
-                shared_size: stats.shared,
-                last_modified,
-                file_count: stats.files,
-                git_root,
-            }));
+            report(entry_path, &target.name, ctx);
         } else {
             // Not a target — spawn parallel exploration of this subtree
             let count = ctx.dirs_scanned.fetch_add(1, Ordering::Relaxed) + 1;
@@ -301,16 +327,19 @@ mod tests {
                 name: "node_modules".to_string(),
                 dirs: vec!["node_modules".to_string()],
                 indicators: vec!["package.json".to_string()],
+                paths: vec![],
             },
             Target {
                 name: "Pods".to_string(),
                 dirs: vec!["Pods".to_string()],
                 indicators: vec!["Podfile".to_string()],
+                paths: vec![],
             },
             Target {
                 name: "Gradle cache".to_string(),
                 dirs: vec!["build".to_string()],
                 indicators: vec!["build.gradle".to_string()],
+                paths: vec![],
             },
         ];
 
@@ -339,6 +368,7 @@ mod tests {
             name: "pnpm store".to_string(),
             dirs: vec![".pnpm-store".to_string()],
             indicators: vec![],
+            paths: vec![],
         }];
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -360,6 +390,7 @@ mod tests {
             name: "node_modules".to_string(),
             dirs: vec!["node_modules".to_string()],
             indicators: vec!["package.json".to_string()],
+            paths: vec![],
         }];
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -399,11 +430,13 @@ mod tests {
                 name: "pnpm store".to_string(),
                 dirs: vec![".pnpm-store".to_string()],
                 indicators: vec![],
+                paths: vec![],
             },
             Target {
                 name: "node_modules".to_string(),
                 dirs: vec!["node_modules".to_string()],
                 indicators: vec!["package.json".to_string()],
+                paths: vec![],
             },
         ];
 
@@ -482,6 +515,7 @@ mod tests {
             name: "node_modules".to_string(),
             dirs: vec!["node_modules".to_string()],
             indicators: vec!["package.json".to_string()],
+            paths: vec![],
         }];
         let (tx, rx) = std::sync::mpsc::channel();
         scan(root.to_path_buf(), targets, vec![], false, tx);
@@ -539,6 +573,7 @@ mod tests {
             name: "node_modules".to_string(),
             dirs: vec!["node_modules".to_string()],
             indicators: vec!["package.json".to_string()],
+            paths: vec![],
         }];
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -578,6 +613,7 @@ mod tests {
             name: "src".to_string(),
             dirs: vec!["src".to_string()],
             indicators: vec![],
+            paths: vec![],
         }];
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -601,6 +637,7 @@ mod tests {
             name: ".cache".to_string(),
             dirs: vec![".cache".to_string()],
             indicators: vec![],
+            paths: vec![],
         }];
 
         // Without --hidden: should still find .cache because it matches a target
@@ -635,6 +672,7 @@ mod tests {
             name: "node_modules".to_string(),
             dirs: vec!["node_modules".to_string()],
             indicators: vec!["package.json".to_string()],
+            paths: vec![],
         }];
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -671,6 +709,7 @@ mod tests {
             name: "node_modules".to_string(),
             dirs: vec!["node_modules".to_string()],
             indicators: vec!["package.json".to_string()],
+            paths: vec![],
         }];
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -686,6 +725,129 @@ mod tests {
 
         // "share/Steam" != "a/share/Steam", so the target inside should be found
         assert_eq!(results.len(), 1);
+    }
+
+    fn fixed_target(name: &str, paths: &[PathBuf]) -> Target {
+        Target {
+            name: name.to_string(),
+            dirs: vec![],
+            indicators: vec![],
+            paths: paths
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect(),
+        }
+    }
+
+    fn found_relative(root: &Path, rx: mpsc::Receiver<ScanMessage>) -> Vec<(String, String)> {
+        let mut found: Vec<(String, String)> = collect_scan_results(rx)
+            .into_iter()
+            .map(|r| {
+                let rel = r.path.strip_prefix(root).unwrap();
+                (rel.to_string_lossy().into_owned(), r.target_name)
+            })
+            .collect();
+        found.sort();
+        found
+    }
+
+    #[test]
+    fn test_scan_reports_fixed_paths_even_if_hidden_or_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join(".npm/_cacache")).unwrap();
+        fs::write(root.join(".npm/_cacache/data"), "x".repeat(100)).unwrap();
+        fs::create_dir_all(root.join("Library/Caches/pnpm")).unwrap();
+
+        let targets = vec![
+            fixed_target("npm cache", &[root.join(".npm/_cacache")]),
+            // The missing Linux location is ignored
+            fixed_target(
+                "pnpm cache",
+                &[root.join("Library/Caches/pnpm"), root.join(".cache/pnpm")],
+            ),
+        ];
+        let (tx, rx) = mpsc::channel();
+        scan(
+            root.to_path_buf(),
+            targets,
+            vec!["Library".to_string()],
+            false,
+            tx,
+        );
+
+        assert_eq!(
+            found_relative(root, rx),
+            vec![
+                (".npm/_cacache".to_string(), "npm cache".to_string()),
+                ("Library/Caches/pnpm".to_string(), "pnpm cache".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_scan_ignores_fixed_paths_outside_root() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("outside/cache")).unwrap();
+        fs::create_dir_all(dir.path().join("root")).unwrap();
+
+        let targets = vec![fixed_target("cache", &[dir.path().join("outside/cache")])];
+        let (tx, rx) = mpsc::channel();
+        scan(dir.path().join("root"), targets, vec![], false, tx);
+
+        assert!(collect_scan_results(rx).is_empty());
+    }
+
+    #[test]
+    fn test_scan_does_not_walk_into_fixed_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // A cache holding project-looking dirs must not yield them
+        fs::create_dir_all(root.join("cache/pkg/node_modules")).unwrap();
+        fs::write(root.join("cache/pkg/package.json"), "{}").unwrap();
+        // A fixed path also matching `dirs` is reported once
+        fs::create_dir_all(root.join(".pnpm-store/v3")).unwrap();
+
+        let targets = vec![
+            Target {
+                name: "node_modules".to_string(),
+                dirs: vec!["node_modules".to_string()],
+                indicators: vec!["package.json".to_string()],
+                paths: vec![],
+            },
+            Target {
+                name: "pnpm store".to_string(),
+                dirs: vec![".pnpm-store".to_string()],
+                indicators: vec![],
+                paths: vec![root.join(".pnpm-store").to_string_lossy().into_owned()],
+            },
+            fixed_target("some cache", &[root.join("cache")]),
+        ];
+        let (tx, rx) = mpsc::channel();
+        scan(root.to_path_buf(), targets, vec![], false, tx);
+
+        assert_eq!(
+            found_relative(root, rx),
+            vec![
+                (".pnpm-store".to_string(), "pnpm store".to_string()),
+                ("cache".to_string(), "some cache".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_scan_ignores_symlinked_fixed_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("real")).unwrap();
+        fs::write(root.join("real/data"), "x".repeat(100)).unwrap();
+        std::os::unix::fs::symlink(root.join("real"), root.join("link")).unwrap();
+
+        let targets = vec![fixed_target("cache", &[root.join("link")])];
+        let (tx, rx) = mpsc::channel();
+        scan(root.to_path_buf(), targets, vec![], false, tx);
+
+        assert!(collect_scan_results(rx).is_empty());
     }
 
     #[test]

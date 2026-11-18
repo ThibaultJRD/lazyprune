@@ -98,6 +98,10 @@ name = "node_modules"
 dirs = ["node_modules"]
 indicator = "package.json"
 
+[[targets]]
+name = "npm cache"
+paths = ["~/.npm/_cacache"]
+
 # --- Ports mode ---
 [ports]
 # Only show ports matching these ranges on startup (toggle with 'a' in TUI)
@@ -109,8 +113,11 @@ dev_filter = ["3000-3009", "4000-4009", "5173-5174", "8080-8090"]
 **Targets** have:
 - `dirs` -- directory names to look for (nested paths like `.yarn/cache` work too)
 - `indicator` (optional) -- a file, or a list of files, one of which must exist in the project dir to confirm it's a real target
+- `paths` (optional) -- fixed locations such as global caches, checked directly instead of searched for (`~` is your home). Shown only when under the scan root; missing ones are ignored
 
 Default targets: `node_modules`, `Pods`, `.gradle`/`build`, `.pnpm-store`, `.yarn/cache`, `.next`, `.nuxt`, `target` (Rust), `dist`.
+
+Default global caches (macOS and Linux locations): npm, pnpm store and cache, Yarn (classic and Berry), Bun, Cargo registry and git checkouts, Homebrew, CocoaPods, Xcode DerivedData. All of them are re-downloaded or rebuilt on demand.
 
 **Ports** config:
 - `dev_filter_enabled` -- only show ports in the configured ranges on startup
@@ -122,6 +129,7 @@ Default targets: `node_modules`, `Pods`, `.gradle`/`build`, `.pnpm-store`, `.yar
 - Walks the filesystem, computes disk usage in parallel with [rayon](https://crates.io/crates/rayon)
 - Sizes are what deleting a directory frees: hard-linked files also present elsewhere (e.g. a pnpm store) are shown as shared, not counted
 - Skips hidden directories unless they match a target
+- Global caches (`paths`) are checked directly, even inside skipped or hidden directories, and never walked into
 - Never follows symlinks
 - Deletion requires explicit confirmation
 

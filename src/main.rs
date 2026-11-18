@@ -86,6 +86,7 @@ fn main() -> io::Result<()> {
                 name: d.clone(),
                 dirs: vec![d.clone()],
                 indicators: vec![],
+                paths: vec![],
             })
             .collect()
     } else {
