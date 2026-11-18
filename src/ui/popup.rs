@@ -101,12 +101,17 @@ pub fn render_processing(frame: &mut Frame, app: &App) {
     let empty = bar_width - filled;
     let bar = format!("  {}{}", "█".repeat(filled), "░".repeat(empty));
 
-    // Current file being deleted
-    let current = if app.prune.delete_current_path.is_empty() {
-        String::new()
-    } else {
-        let short = super::tilde_path(std::path::Path::new(&app.prune.delete_current_path));
-        format!("  {}", short)
+    // Oldest deletion still running, plus how many others run alongside it
+    let in_progress = &app.prune.delete_in_progress;
+    let current = match in_progress.first() {
+        None => String::new(),
+        Some((_, path)) => {
+            let short = super::tilde_path(std::path::Path::new(path));
+            match in_progress.len() - 1 {
+                0 => format!("  {short}"),
+                others => format!("  {short} (+{others})"),
+            }
+        }
     };
 
     let lines = vec![
@@ -562,6 +567,24 @@ mod tests {
         // The reason must stay visible even when the path is wider than the popup
         let screen = render_screen(&mut app, 80, 30);
         assert!(screen.contains("Permission denied (os error 13)"));
+    }
+
+    #[test]
+    fn test_processing_popup_shows_oldest_running_and_count() {
+        let mut app = test_app();
+        app.prune.delete_total = 10;
+        app.prune.delete_progress = 6;
+        app.prune.delete_in_progress = vec![
+            (3, "/p/a/node_modules".into()),
+            (5, "/p/b/node_modules".into()),
+            (7, "/p/c/node_modules".into()),
+        ];
+        app.mode = AppMode::Processing;
+
+        let screen = render_screen(&mut app, 100, 30);
+        assert!(screen.contains("6/10 (60%)"));
+        assert!(screen.contains("/p/a/node_modules (+2)"));
+        assert!(!screen.contains("/p/b/node_modules"));
     }
 
     #[test]

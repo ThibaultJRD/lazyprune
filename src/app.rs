@@ -5,9 +5,9 @@ use ratatui::widgets::ListState;
 use std::sync::mpsc;
 
 pub enum DeleteMessage {
-    Deleting { path: String },
+    Deleting { idx: usize, path: String },
     Deleted { idx: usize, size: u64 },
-    Error { err: String },
+    Error { idx: usize, err: String },
     Complete,
 }
 
@@ -138,7 +138,9 @@ pub struct PruneState {
     pub delete_rx: Option<mpsc::Receiver<DeleteMessage>>,
     pub delete_total: usize,
     pub delete_progress: usize,
-    pub delete_current_path: String,
+    /// Deletions started but not finished (index, path), oldest first.
+    /// Deletions run in parallel, so several can be in progress at once.
+    pub delete_in_progress: Vec<(usize, String)>,
     pub delete_errors: Vec<String>,
     pub delete_done_indices: Vec<usize>,
     pub project_grouping: bool,
@@ -186,7 +188,7 @@ impl PruneState {
             delete_rx: None,
             delete_total: 0,
             delete_progress: 0,
-            delete_current_path: String::new(),
+            delete_in_progress: Vec::new(),
             delete_errors: Vec::new(),
             delete_done_indices: Vec::new(),
             project_grouping: false,
@@ -447,7 +449,7 @@ impl PruneState {
 
         self.delete_total = indices.len();
         self.delete_progress = 0;
-        self.delete_current_path = String::new();
+        self.delete_in_progress = Vec::new();
         self.delete_errors = Vec::new();
         self.delete_done_indices = Vec::new();
 
@@ -463,7 +465,10 @@ impl PruneState {
             use rayon::prelude::*;
             items_to_delete.par_iter().for_each(|(idx, path, size)| {
                 let path_str = path.to_string_lossy().to_string();
-                let _ = tx.send(DeleteMessage::Deleting { path: path_str });
+                let _ = tx.send(DeleteMessage::Deleting {
+                    idx: *idx,
+                    path: path_str,
+                });
                 match std::fs::remove_dir_all(path) {
                     Ok(()) => {
                         let _ = tx.send(DeleteMessage::Deleted {
@@ -473,6 +478,7 @@ impl PruneState {
                     }
                     Err(e) => {
                         let _ = tx.send(DeleteMessage::Error {
+                            idx: *idx,
                             err: format!("{}: {e}", path.display()),
                         });
                     }
@@ -493,18 +499,20 @@ impl PruneState {
         loop {
             match rx.try_recv() {
                 Ok(msg) => match msg {
-                    DeleteMessage::Deleting { path } => {
-                        self.delete_current_path = path;
+                    DeleteMessage::Deleting { idx, path } => {
+                        self.delete_in_progress.push((idx, path));
                     }
                     DeleteMessage::Deleted { idx, size } => {
                         self.total_deleted += size;
                         self.items_deleted += 1;
                         self.delete_progress += 1;
                         self.delete_done_indices.push(idx);
+                        self.delete_in_progress.retain(|(i, _)| *i != idx);
                     }
-                    DeleteMessage::Error { err } => {
+                    DeleteMessage::Error { idx, err } => {
                         self.delete_progress += 1;
                         self.delete_errors.push(err);
+                        self.delete_in_progress.retain(|(i, _)| *i != idx);
                     }
                     DeleteMessage::Complete => {
                         self.delete_rx = None;
@@ -1254,6 +1262,35 @@ mod tests {
         assert_eq!(app.mode, AppMode::Errors);
         assert_eq!(app.prune.delete_errors.len(), 1);
         assert!(app.prune.delete_errors[0].contains(missing_str));
+    }
+
+    #[test]
+    fn test_delete_progress_tracks_items_still_running() {
+        // Parallel deletions all start at once, then finish in any order
+        let mut app = make_test_app(vec![]);
+        let (tx, rx) = mpsc::channel();
+        app.prune.delete_rx = Some(rx);
+        let running = |app: &App| -> Vec<String> {
+            let in_progress = &app.prune.delete_in_progress;
+            in_progress.iter().map(|(_, p)| p.clone()).collect()
+        };
+        for (idx, path) in [(2, "/a"), (1, "/b"), (0, "/c")] {
+            let path = path.to_string();
+            tx.send(DeleteMessage::Deleting { idx, path }).unwrap();
+        }
+        app.prune.poll_delete_results();
+        assert_eq!(running(&app), vec!["/a", "/b", "/c"]);
+
+        // The last one started finishes first: it is no longer shown
+        tx.send(DeleteMessage::Deleted { idx: 0, size: 1 }).unwrap();
+        app.prune.poll_delete_results();
+        assert_eq!(running(&app), vec!["/a", "/b"]);
+
+        // A failure ends an item too
+        let err = "/a: Permission denied".to_string();
+        tx.send(DeleteMessage::Error { idx: 2, err }).unwrap();
+        app.prune.poll_delete_results();
+        assert_eq!(running(&app), vec!["/b"]);
     }
 
     #[test]
