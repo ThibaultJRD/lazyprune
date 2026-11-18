@@ -135,11 +135,30 @@ fn find_git_root(path: &Path) -> Option<PathBuf> {
     }
 }
 
+/// True if git tracks at least one file inside `path` (a committed `dist`, a Yarn
+/// zero-install cache...): deleting it would change the repo. False when git can't tell.
+fn has_tracked_files(path: &Path) -> bool {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return false;
+    };
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(parent)
+        .args(["ls-files", "--error-unmatch", "--"])
+        .arg(name)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
 struct ScanContext {
     root: PathBuf,
     targets: Vec<Target>,
     skip: Vec<String>,
     include_hidden: bool,
+    /// Also report targets holding files tracked by git (excluded by default)
+    include_tracked: bool,
     tx: mpsc::Sender<ScanMessage>,
     dirs_scanned: Arc<AtomicU64>,
     /// Fixed target locations with their target name: reported directly, never walked
@@ -153,6 +172,7 @@ pub fn scan(
     targets: Vec<Target>,
     skip: Vec<String>,
     include_hidden: bool,
+    include_tracked: bool,
     tx: mpsc::Sender<ScanMessage>,
 ) {
     let fixed = targets
@@ -164,6 +184,7 @@ pub fn scan(
         targets,
         skip,
         include_hidden,
+        include_tracked,
         tx,
         dirs_scanned: Arc::new(AtomicU64::new(0)),
         fixed,
@@ -184,11 +205,14 @@ pub fn scan(
     let _ = ctx.tx.send(ScanMessage::Complete);
 }
 
-/// Compute the stats of a found target and send it
+/// Compute the stats of a found target and send it, unless git tracks files in it
 fn report(path: PathBuf, target_name: &str, ctx: &ScanContext) {
+    let git_root = find_git_root(&path);
+    if !ctx.include_tracked && git_root.is_some() && has_tracked_files(&path) {
+        return;
+    }
     let stats = compute_dir_stats(&path);
     let last_modified = fs::metadata(&path).and_then(|m| m.modified()).ok();
-    let git_root = find_git_root(&path);
 
     let _ = ctx.tx.send(ScanMessage::Found(ScanResult {
         path,
@@ -344,7 +368,7 @@ mod tests {
         ];
 
         let (tx, rx) = std::sync::mpsc::channel();
-        scan(dir.path().to_path_buf(), targets, vec![], false, tx);
+        scan(dir.path().to_path_buf(), targets, vec![], false, false, tx);
 
         let results = collect_scan_results(rx);
 
@@ -372,7 +396,7 @@ mod tests {
         }];
 
         let (tx, rx) = std::sync::mpsc::channel();
-        scan(dir.path().to_path_buf(), targets, vec![], false, tx);
+        scan(dir.path().to_path_buf(), targets, vec![], false, false, tx);
 
         let results = collect_scan_results(rx);
 
@@ -398,6 +422,7 @@ mod tests {
             dir.path().to_path_buf(),
             targets,
             vec!["skip-me".to_string()],
+            false,
             false,
             tx,
         );
@@ -441,7 +466,7 @@ mod tests {
         ];
 
         let (tx, rx) = std::sync::mpsc::channel();
-        scan(dir.path().to_path_buf(), targets, vec![], false, tx);
+        scan(dir.path().to_path_buf(), targets, vec![], false, false, tx);
 
         let results = collect_scan_results(rx);
 
@@ -518,7 +543,7 @@ mod tests {
             paths: vec![],
         }];
         let (tx, rx) = std::sync::mpsc::channel();
-        scan(root.to_path_buf(), targets, vec![], false, tx);
+        scan(root.to_path_buf(), targets, vec![], false, false, tx);
 
         let results = collect_scan_results(rx);
         assert_eq!(results.len(), 1);
@@ -577,7 +602,7 @@ mod tests {
         }];
 
         let (tx, rx) = std::sync::mpsc::channel();
-        scan(root.to_path_buf(), targets, vec![], false, tx);
+        scan(root.to_path_buf(), targets, vec![], false, false, tx);
 
         let results = collect_scan_results(rx);
 
@@ -617,7 +642,7 @@ mod tests {
         }];
 
         let (tx, rx) = std::sync::mpsc::channel();
-        scan(root.to_path_buf(), targets, vec![], false, tx);
+        scan(root.to_path_buf(), targets, vec![], false, false, tx);
 
         let results = collect_scan_results(rx);
 
@@ -642,7 +667,14 @@ mod tests {
 
         // Without --hidden: should still find .cache because it matches a target
         let (tx, rx) = std::sync::mpsc::channel();
-        scan(root.to_path_buf(), targets.clone(), vec![], false, tx);
+        scan(
+            root.to_path_buf(),
+            targets.clone(),
+            vec![],
+            false,
+            false,
+            tx,
+        );
 
         let results = collect_scan_results(rx);
 
@@ -681,6 +713,7 @@ mod tests {
             targets,
             vec![".local/share/Steam".to_string()],
             true, // --hidden to enter .local
+            false,
             tx,
         );
 
@@ -717,6 +750,7 @@ mod tests {
             root.to_path_buf(),
             targets,
             vec!["a/share/Steam".to_string()],
+            false,
             false,
             tx,
         );
@@ -773,6 +807,7 @@ mod tests {
             targets,
             vec!["Library".to_string()],
             false,
+            false,
             tx,
         );
 
@@ -793,7 +828,7 @@ mod tests {
 
         let targets = vec![fixed_target("cache", &[dir.path().join("outside/cache")])];
         let (tx, rx) = mpsc::channel();
-        scan(dir.path().join("root"), targets, vec![], false, tx);
+        scan(dir.path().join("root"), targets, vec![], false, false, tx);
 
         assert!(collect_scan_results(rx).is_empty());
     }
@@ -824,13 +859,83 @@ mod tests {
             fixed_target("some cache", &[root.join("cache")]),
         ];
         let (tx, rx) = mpsc::channel();
-        scan(root.to_path_buf(), targets, vec![], false, tx);
+        scan(root.to_path_buf(), targets, vec![], false, false, tx);
 
         assert_eq!(
             found_relative(root, rx),
             vec![
                 (".pnpm-store".to_string(), "pnpm store".to_string()),
                 ("cache".to_string(), "some cache".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_scan_excludes_dirs_tracked_by_git() {
+        // e.g. a committed `dist` (JS GitHub Actions) or Yarn zero-install cache
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("package.json"), "{}").unwrap();
+        fs::create_dir_all(root.join("dist")).unwrap();
+        fs::write(root.join("dist/index.js"), "x").unwrap();
+        fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args([
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                ])
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["add", "package.json", "dist"]);
+        git(&["commit", "-qm", "init"]);
+
+        let targets = vec![
+            Target {
+                name: "node_modules".to_string(),
+                dirs: vec!["node_modules".to_string()],
+                indicators: vec!["package.json".to_string()],
+                paths: vec![],
+            },
+            Target {
+                name: "dist".to_string(),
+                dirs: vec!["dist".to_string()],
+                indicators: vec!["package.json".to_string()],
+                paths: vec![],
+            },
+        ];
+
+        let (tx, rx) = mpsc::channel();
+        scan(
+            root.to_path_buf(),
+            targets.clone(),
+            vec![],
+            false,
+            false,
+            tx,
+        );
+        assert_eq!(
+            found_relative(root, rx),
+            vec![("node_modules".to_string(), "node_modules".to_string())]
+        );
+
+        // --include-tracked shows it again
+        let (tx, rx) = mpsc::channel();
+        scan(root.to_path_buf(), targets, vec![], false, true, tx);
+        assert_eq!(
+            found_relative(root, rx),
+            vec![
+                ("dist".to_string(), "dist".to_string()),
+                ("node_modules".to_string(), "node_modules".to_string()),
             ]
         );
     }
@@ -845,7 +950,7 @@ mod tests {
 
         let targets = vec![fixed_target("cache", &[root.join("link")])];
         let (tx, rx) = mpsc::channel();
-        scan(root.to_path_buf(), targets, vec![], false, tx);
+        scan(root.to_path_buf(), targets, vec![], false, false, tx);
 
         assert!(collect_scan_results(rx).is_empty());
     }
@@ -868,7 +973,7 @@ mod tests {
 
         let targets = crate::config::Config::load(None).unwrap().targets;
         let (tx, rx) = std::sync::mpsc::channel();
-        scan(root.to_path_buf(), targets, vec![], false, tx);
+        scan(root.to_path_buf(), targets, vec![], false, false, tx);
 
         let mut found: Vec<(String, String)> = collect_scan_results(rx)
             .into_iter()

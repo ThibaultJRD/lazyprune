@@ -44,6 +44,10 @@ struct Cli {
     #[arg(short = 'H', long)]
     hidden: bool,
 
+    /// Also show directories holding files tracked by git (e.g. a committed dist)
+    #[arg(long)]
+    include_tracked: bool,
+
     /// Scan for any directory with this name (ad-hoc, no config needed)
     #[arg(short = 'D', long, conflicts_with = "target")]
     dir: Option<Vec<String>>,
@@ -146,8 +150,9 @@ fn main() -> io::Result<()> {
     let (tx, rx) = mpsc::channel();
 
     let hidden = cli.hidden;
+    let include_tracked = cli.include_tracked;
     thread::spawn(move || {
-        scanner::scan(root, targets, skip, hidden, tx);
+        scanner::scan(root, targets, skip, hidden, include_tracked, tx);
     });
 
     // Handle --dry-run: accumulate results with stats, then print

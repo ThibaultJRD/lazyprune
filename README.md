@@ -43,6 +43,7 @@ lazyprune -t / --target node_modules # Only look for node_modules
 lazyprune -d / --dry-run             # Print results to stdout, no TUI
 lazyprune --dry-run --ports          # Print open ports to stdout
 lazyprune -H / --hidden              # Also scan hidden directories (e.g. ~/.cache)
+lazyprune --include-tracked          # Also show directories holding files tracked by git
 lazyprune -D / --dir vendor          # Scan for arbitrary directory names (ad-hoc)
 lazyprune --init-config              # Generate config at ~/.config/lazyprune/config.toml
 ```
@@ -138,6 +139,7 @@ Default global caches (macOS and Linux locations): npm, pnpm store and cache, Ya
 - Walks the filesystem, computes disk usage in parallel with [rayon](https://crates.io/crates/rayon)
 - Sizes are what deleting a directory frees: hard-linked files also present elsewhere (e.g. a pnpm store) are shown as shared, not counted
 - Skips hidden directories unless they match a target
+- Leaves out directories holding files tracked by git (a committed `dist`, a Yarn zero-install cache): deleting them would change the repo. `--include-tracked` shows them
 - Global caches (`paths`) are checked directly, even inside skipped or hidden directories, and never walked into
 - Never follows symlinks
 - Deletion requires explicit confirmation
