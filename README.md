@@ -13,6 +13,14 @@ Switch between modes with `Tab`, `1`, or `2`. Vim-style keybindings throughout.
 
 ## Install
 
+With [Homebrew](https://brew.sh) (macOS, no Rust toolchain needed):
+
+```bash
+brew install ThibaultJRD/tap/lazyprune
+```
+
+With Cargo:
+
 ```bash
 cargo install lazyprune
 ```
