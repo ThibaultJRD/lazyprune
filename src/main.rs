@@ -76,7 +76,7 @@ fn main() -> io::Result<()> {
         std::process::exit(1);
     });
 
-    let root = cli.path.unwrap_or_else(|| config.root_path());
+    let root = resolve_root(cli.path.unwrap_or_else(|| config.root_path()));
     let skip = config.skip.clone();
 
     let mut targets = if let Some(ref dir_names) = cli.dir {
@@ -190,6 +190,12 @@ fn main() -> io::Result<()> {
     }
 
     result
+}
+
+/// Absolute, canonical root: global caches (`~/...`) are only shown when under it,
+/// which a relative root like `.` would never match. Kept as is when it doesn't exist.
+fn resolve_root(root: PathBuf) -> PathBuf {
+    std::fs::canonicalize(&root).unwrap_or(root)
 }
 
 fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
@@ -566,6 +572,18 @@ mod tests {
         use clap::Parser;
         let cli = Cli::try_parse_from(["lazyprune", "-D", "src", "-D", "docs"]).unwrap();
         assert_eq!(cli.dir, Some(vec!["src".to_string(), "docs".to_string()]));
+    }
+
+    #[test]
+    fn test_resolve_root_makes_path_canonical() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("a")).unwrap();
+        // A relative root (`.`, `..`) must still contain the global caches under it
+        let canonical = dir.path().canonicalize().unwrap();
+        assert_eq!(resolve_root(dir.path().join("a/..")), canonical);
+        // A missing path is kept as is: the scan then finds nothing
+        let missing = PathBuf::from("/nonexistent/lazyprune");
+        assert_eq!(resolve_root(missing.clone()), missing);
     }
 
     #[test]
