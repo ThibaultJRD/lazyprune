@@ -18,6 +18,17 @@ fn popup_area(area: Rect, width: u16, height: u16) -> Rect {
     area
 }
 
+/// Keep the end of `s` within `max` chars, marking the cut with a leading `…`
+fn truncate_left(s: &str, max: usize) -> String {
+    let len = s.chars().count();
+    if len <= max {
+        return s.to_string();
+    }
+    let keep = max.saturating_sub(1);
+    let tail: String = s.chars().skip(len - keep).collect();
+    format!("…{tail}")
+}
+
 pub fn render_confirm(frame: &mut Frame, app: &App) {
     let selected = app.prune.selected_items();
     let count = selected.len();
@@ -26,21 +37,39 @@ pub fn render_confirm(frame: &mut Frame, app: &App) {
     let title = format!("Delete {} items? ({})", count, size_label);
 
     let max_show = 15;
+    let paths: Vec<String> = selected
+        .iter()
+        .take(max_show)
+        .map(|item| super::tilde_path(&item.path))
+        .collect();
+
+    // Width: adapt to the longest path (+ indent and borders), within the terminal
+    let longest = paths
+        .iter()
+        .map(|p| p.chars().count() + 4)
+        .max()
+        .unwrap_or(0) as u16;
+    let title_len = title.len() as u16 + 4; // borders + padding
+    let terminal_width = frame.area().width;
+    let width = longest
+        .max(title_len)
+        .max(45)
+        // Not clamp(): it panics when the terminal is narrower than the minimum
+        .min(terminal_width.saturating_sub(10));
+    let room = (width as usize).saturating_sub(4);
+
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::raw(""));
-
-    for (i, item) in selected.iter().enumerate() {
-        if i >= max_show {
-            lines.push(Line::styled(
-                format!("  ... and {} more", count - max_show),
-                Style::default().fg(Color::DarkGray),
-            ));
-            break;
-        }
-        let short = super::tilde_path(&item.path);
+    for path in &paths {
         lines.push(Line::styled(
-            format!("  {}", short),
+            format!("  {}", truncate_left(path, room)),
             Style::default().fg(Color::White),
+        ));
+    }
+    if count > max_show {
+        lines.push(Line::styled(
+            format!("  ... and {} more", count - max_show),
+            Style::default().fg(Color::DarkGray),
         ));
     }
 
@@ -51,20 +80,6 @@ pub fn render_confirm(frame: &mut Frame, app: &App) {
         Span::styled("[Esc]", Style::default().fg(Color::Yellow)),
         Span::raw(" Cancel"),
     ]));
-
-    // Calculate width: adapt to longest path
-    let max_line_len = lines
-        .iter()
-        .map(|l| l.spans.iter().map(|s| s.content.len()).sum::<usize>())
-        .max()
-        .unwrap_or(0) as u16;
-    let title_len = title.len() as u16 + 4; // borders + padding
-    let terminal_width = frame.area().width;
-    let width = max_line_len
-        .max(title_len)
-        .max(45)
-        // Not clamp(): it panics when the terminal is narrower than the minimum
-        .min(terminal_width.saturating_sub(10));
     let height = lines.len() as u16 + 2; // +2 for borders
 
     let area = popup_area(frame.area(), width, height);
@@ -585,6 +600,42 @@ mod tests {
         assert!(screen.contains("6/10 (60%)"));
         assert!(screen.contains("/p/a/node_modules (+2)"));
         assert!(!screen.contains("/p/b/node_modules"));
+    }
+
+    #[test]
+    fn test_delete_confirm_keeps_the_end_of_long_paths() {
+        // What gets deleted is at the end of the path: it must stay visible
+        let mut app = test_app();
+        let long = format!(
+            "/{}my-project/node_modules",
+            "very-long-dir-name/".repeat(6)
+        );
+        app.prune.items = vec![ScanResult {
+            path: long.into(),
+            target_name: "node_modules".into(),
+            size: 1,
+            shared_size: 0,
+            last_modified: None,
+            file_count: 1,
+            git_root: None,
+        }];
+        app.prune.selected = vec![true];
+        app.prune.apply_filter();
+        app.mode = AppMode::Confirm;
+
+        let screen = render_screen(&mut app, 80, 30);
+        assert!(screen.contains("…"));
+        assert!(screen.contains("my-project/node_modules"));
+    }
+
+    #[test]
+    fn test_truncate_left_counts_chars_not_bytes() {
+        assert_eq!(super::truncate_left("abc", 5), "abc");
+        // Multi-byte chars must not be split
+        assert_eq!(
+            super::truncate_left("~/café 🚀/node_modules", 15),
+            "…🚀/node_modules"
+        );
     }
 
     #[test]
