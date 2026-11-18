@@ -87,7 +87,7 @@ lazyprune --init-config              # Generate config at ~/.config/lazyprune/co
 
 ## Config
 
-Override defaults with `~/.config/lazyprune/config.toml`:
+Override defaults with `~/.config/lazyprune/config.toml` (`lazyprune --init-config` writes a copy of the defaults there to start from). For example:
 
 ```toml
 root = "~"
@@ -110,10 +110,19 @@ dev_filter_enabled = true
 dev_filter = ["3000-3009", "4000-4009", "5173-5174", "8080-8090"]
 ```
 
+Each setting you write **replaces** its default as a whole; settings you leave out keep their default:
+- `root`, `skip` -- your value replaces the default one (your `skip` list is not added to the default list)
+- `[[targets]]` -- as soon as your file has one, only your targets are scanned. A file with just a `node_modules` target finds only `node_modules`: no other default target, no global cache
+- `[ports]` -- each key replaces its default on its own
+
+New default targets from later versions don't reach a config file that lists its own `[[targets]]`: compare it with [`config.default.toml`](config.default.toml) to pick them up.
+
 **Targets** have:
 - `dirs` -- directory names to look for (nested paths like `.yarn/cache` work too)
 - `indicator` (optional) -- a file, or a list of files, one of which must exist in the project dir to confirm it's a real target
 - `paths` (optional) -- fixed locations such as global caches, checked directly instead of searched for (`~` is your home). Shown only when under the scan root; missing ones are ignored
+
+A target needs `dirs`, `paths`, or both.
 
 Default targets: `node_modules`, `Pods`, `.gradle`/`build`, `.pnpm-store`, `.yarn/cache`, `.next`, `.nuxt`, `target` (Rust), `dist`.
 

@@ -194,6 +194,28 @@ mod tests {
     }
 
     #[test]
+    fn test_user_targets_replace_default_targets() {
+        // Listing targets means "only these": no default target is added back
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+            [[targets]]
+            name = "node_modules"
+            dirs = ["node_modules"]
+        "#,
+        )
+        .unwrap();
+
+        let config = Config::load(Some(&config_path)).unwrap();
+        let names: Vec<&str> = config.targets.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["node_modules"]);
+        // Sections left out keep their defaults
+        assert_eq!(config.skip, Config::load(None).unwrap().skip);
+    }
+
+    #[test]
     fn test_load_nonexistent_user_config() {
         let path = Path::new("/tmp/nonexistent_prune_config.toml");
         let config = Config::load(Some(path)).unwrap();
