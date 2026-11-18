@@ -266,7 +266,8 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('h') | KeyCode::Left | KeyCode::Esc if app.focus == FocusPanel::Details => {
             app.focus = FocusPanel::List;
         }
-        KeyCode::Esc => app.exit = true,
+        // Esc only closes things: quitting by accident is too easy otherwise
+        KeyCode::Esc => {}
         _ => match (app.active_tool, app.focus) {
             (Tool::Prune, FocusPanel::List) => handle_prune_list_key(app, key),
             (Tool::Prune, FocusPanel::Details) => handle_prune_details_key(app, key.code),
@@ -677,9 +678,10 @@ mod tests {
                 press(&mut app, KeyCode::Char('q'));
                 assert!(app.exit, "q quits ({tool:?} {focus:?})");
             }
+            // Esc closes things, it never quits: only q and Ctrl+C do
             let mut app = test_app(tool);
             press(&mut app, KeyCode::Esc);
-            assert!(app.exit, "Esc quits from the list ({tool:?})");
+            assert!(!app.exit, "Esc does not quit from the list ({tool:?})");
             for back in [KeyCode::Esc, KeyCode::Char('h'), KeyCode::Left] {
                 let mut app = test_app(tool);
                 app.focus = FocusPanel::Details;
