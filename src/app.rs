@@ -418,12 +418,19 @@ impl PruneState {
         }
     }
 
-    /// Select all visible (filtered) items.
-    pub fn select_all(&mut self) {
-        for &row in &self.rows {
-            if let Row::Item(i) = row {
-                self.selected[i] = true;
-            }
+    /// Select all visible (filtered) items, or deselect them when they all already are.
+    pub fn toggle_select_all(&mut self) {
+        let visible: Vec<usize> = self
+            .rows
+            .iter()
+            .filter_map(|&row| match row {
+                Row::Item(i) => Some(i),
+                _ => None,
+            })
+            .collect();
+        let select = !visible.iter().all(|&i| self.selected[i]);
+        for i in visible {
+            self.selected[i] = select;
         }
     }
 
@@ -1517,6 +1524,28 @@ mod tests {
         // Toggle again to deselect
         app.prune.toggle_selection();
         assert!(!app.prune.selected[idx]);
+    }
+
+    #[test]
+    fn test_toggle_select_all_only_touches_visible_items() {
+        let mut app = make_test_app(vec![
+            make_result("node_modules", "/a/node_modules", 100),
+            make_result("node_modules", "/b/node_modules", 200),
+            make_result("Pods", "/c/Pods", 300),
+        ]);
+        // /c/Pods is selected, then hidden by a filter
+        let pods = app.prune.items.iter().position(|i| i.target_name == "Pods");
+        let pods = pods.unwrap();
+        app.prune.selected[pods] = true;
+        app.prune.filter_text = "node_modules".to_string();
+        app.prune.apply_filter();
+
+        app.prune.toggle_select_all();
+        assert_eq!(app.prune.selected_count(), 3);
+        // All visible items selected: deselect them, keep the hidden one
+        app.prune.toggle_select_all();
+        assert_eq!(app.prune.selected_count(), 1);
+        assert!(app.prune.selected[pods]);
     }
 
     #[test]

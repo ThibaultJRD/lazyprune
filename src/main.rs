@@ -342,7 +342,7 @@ fn handle_prune_list_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char(' ') => app.prune.toggle_selection(),
         KeyCode::Char('v') => app.prune.invert_selection(),
         KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.prune.select_all()
+            app.prune.toggle_select_all()
         }
         KeyCode::Char('s') => app.prune.cycle_sort(),
         KeyCode::Char('p') => app.prune.toggle_project_grouping(),
@@ -435,7 +435,9 @@ fn handle_ports_list_key(app: &mut App, key: KeyEvent) {
             let pos = ports.list_state.selected().unwrap_or(0);
             ports.toggle_selection(pos);
         }
-        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => ports.select_all(),
+        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            ports.toggle_select_all()
+        }
         KeyCode::Char('v') => ports.invert_selection(),
         KeyCode::Char('s') => ports.cycle_sort(),
         KeyCode::Char('a') => {
@@ -694,6 +696,29 @@ mod tests {
                 assert!(!app.exit);
                 assert_eq!(app.focus, FocusPanel::List, "{tool:?} {back:?}");
             }
+        }
+    }
+
+    #[test]
+    fn test_ctrl_a_toggles_select_all() {
+        let ctrl_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        for tool in [Tool::Prune, Tool::Ports] {
+            let mut app = test_app(tool);
+            let selected = |app: &App| match tool {
+                Tool::Prune => app.prune.selected.clone(),
+                Tool::Ports => app.ports.as_ref().unwrap().selected.clone(),
+            };
+            press(&mut app, KeyCode::Char(' '));
+            handle_key(&mut app, ctrl_a);
+            assert_eq!(
+                selected(&app),
+                vec![true, true],
+                "{tool:?}: selects the rest"
+            );
+            handle_key(&mut app, ctrl_a);
+            assert_eq!(selected(&app), vec![false, false], "{tool:?}: all -> none");
+            handle_key(&mut app, ctrl_a);
+            assert_eq!(selected(&app), vec![true, true], "{tool:?}: none -> all");
         }
     }
 
