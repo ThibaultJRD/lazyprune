@@ -242,12 +242,17 @@ impl PortsState {
         }
     }
 
-    /// Select all visible (filtered) items.
-    pub fn select_all(&mut self) {
-        for &idx in &self.filtered_indices {
-            if idx < self.selected.len() {
-                self.selected[idx] = true;
-            }
+    /// Select all visible (filtered) items, or deselect them when they all already are.
+    pub fn toggle_select_all(&mut self) {
+        let visible: Vec<usize> = self
+            .filtered_indices
+            .iter()
+            .copied()
+            .filter(|&i| i < self.selected.len())
+            .collect();
+        let select = !visible.iter().all(|&i| self.selected[i]);
+        for i in visible {
+            self.selected[i] = select;
         }
     }
 
@@ -1028,7 +1033,7 @@ mod tests {
         ];
         state.selected = vec![false; 3];
         state.apply_filter();
-        state.select_all();
+        state.toggle_select_all();
         assert_eq!(state.selected_count(), 3);
     }
 

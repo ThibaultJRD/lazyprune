@@ -60,7 +60,7 @@ lazyprune --init-config              # Generate config at ~/.config/lazyprune/co
 | `g/G` | Jump top/bottom |
 | `Space` | Toggle selection |
 | `v` | Invert selection |
-| `Ctrl+a` | Select all |
+| `Ctrl+a` | Select all (again: none) |
 | `/` | Filter |
 | `s` | Cycle sort |
 | `l/→/Enter` | Open details panel |
