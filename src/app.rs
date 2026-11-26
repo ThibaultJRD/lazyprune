@@ -2,7 +2,34 @@ use crate::config::{Config, parse_port_filter};
 use crate::ports::PortsState;
 use crate::scanner::{ScanMessage, ScanResult};
 use ratatui::widgets::ListState;
-use std::sync::mpsc;
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, mpsc};
+
+/// Files of one item being deleted: how many the scan saw, how many are gone
+pub struct FileProgress {
+    pub total: u64,
+    pub done: Arc<AtomicU64>,
+}
+
+/// Delete a directory tree like `fs::remove_dir_all`, counting the files removed
+/// (not dirs nor symlinks, like the scan) so that progress can be shown.
+/// A symlink is removed, never followed.
+fn remove_dir_counting(path: &Path, files_done: &AtomicU64) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            remove_dir_counting(&entry.path(), files_done)?;
+        } else {
+            std::fs::remove_file(entry.path())?;
+            if !file_type.is_symlink() {
+                files_done.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+    std::fs::remove_dir(path)
+}
 
 pub enum DeleteMessage {
     Deleting { idx: usize, path: String },
@@ -141,6 +168,8 @@ pub struct PruneState {
     /// Deletions started but not finished (index, path), oldest first.
     /// Deletions run in parallel, so several can be in progress at once.
     pub delete_in_progress: Vec<(usize, String)>,
+    /// Files to delete and deleted so far, per item being deleted (by index)
+    pub delete_files: std::collections::HashMap<usize, FileProgress>,
     pub delete_errors: Vec<String>,
     pub delete_done_indices: Vec<usize>,
     pub project_grouping: bool,
@@ -189,6 +218,7 @@ impl PruneState {
             delete_total: 0,
             delete_progress: 0,
             delete_in_progress: Vec::new(),
+            delete_files: std::collections::HashMap::new(),
             delete_errors: Vec::new(),
             delete_done_indices: Vec::new(),
             project_grouping: false,
@@ -450,12 +480,22 @@ impl PruneState {
         self.delete_total = indices.len();
         self.delete_progress = 0;
         self.delete_in_progress = Vec::new();
+        self.delete_files.clear();
         self.delete_errors = Vec::new();
         self.delete_done_indices = Vec::new();
 
-        let items_to_delete: Vec<(usize, std::path::PathBuf, u64)> = indices
+        let items_to_delete: Vec<(usize, std::path::PathBuf, u64, Arc<AtomicU64>)> = indices
             .iter()
-            .map(|&i| (i, self.items[i].path.clone(), self.items[i].size))
+            .map(|&i| {
+                let done = Arc::new(AtomicU64::new(0));
+                let total = self.items[i].file_count;
+                let progress = FileProgress {
+                    total,
+                    done: Arc::clone(&done),
+                };
+                self.delete_files.insert(i, progress);
+                (i, self.items[i].path.clone(), self.items[i].size, done)
+            })
             .collect();
 
         let (tx, rx) = mpsc::channel();
@@ -463,30 +503,47 @@ impl PruneState {
 
         std::thread::spawn(move || {
             use rayon::prelude::*;
-            items_to_delete.par_iter().for_each(|(idx, path, size)| {
-                let path_str = path.to_string_lossy().to_string();
-                let _ = tx.send(DeleteMessage::Deleting {
-                    idx: *idx,
-                    path: path_str,
+            items_to_delete
+                .par_iter()
+                .for_each(|(idx, path, size, done)| {
+                    let path_str = path.to_string_lossy().to_string();
+                    let _ = tx.send(DeleteMessage::Deleting {
+                        idx: *idx,
+                        path: path_str,
+                    });
+                    match remove_dir_counting(path, done) {
+                        Ok(()) => {
+                            let _ = tx.send(DeleteMessage::Deleted {
+                                idx: *idx,
+                                size: *size,
+                            });
+                        }
+                        Err(e) => {
+                            let _ = tx.send(DeleteMessage::Error {
+                                idx: *idx,
+                                err: format!("{}: {e}", path.display()),
+                            });
+                        }
+                    }
                 });
-                match std::fs::remove_dir_all(path) {
-                    Ok(()) => {
-                        let _ = tx.send(DeleteMessage::Deleted {
-                            idx: *idx,
-                            size: *size,
-                        });
-                    }
-                    Err(e) => {
-                        let _ = tx.send(DeleteMessage::Error {
-                            idx: *idx,
-                            err: format!("{}: {e}", path.display()),
-                        });
-                    }
-                }
-            });
             let _ = tx.send(DeleteMessage::Complete);
         });
         true
+    }
+
+    /// Files deleted so far and files to delete, over the whole deletion
+    pub fn delete_files_progress(&self) -> (u64, u64) {
+        self.delete_files.values().fold((0, 0), |(done, total), f| {
+            let item_done = f.done.load(Ordering::Relaxed).min(f.total);
+            (done + item_done, total + f.total)
+        })
+    }
+
+    /// Share of an item's files already deleted, in percent (capped: the scan may be stale)
+    pub fn item_delete_pct(&self, idx: usize) -> u64 {
+        self.delete_files.get(&idx).map_or(0, |f| {
+            f.done.load(Ordering::Relaxed).min(f.total) * 100 / f.total.max(1)
+        })
     }
 
     /// Poll the deletion channel. Returns true once the deletion is over.
@@ -1291,6 +1348,76 @@ mod tests {
         tx.send(DeleteMessage::Error { idx: 2, err }).unwrap();
         app.prune.poll_delete_results();
         assert_eq!(running(&app), vec!["/b"]);
+    }
+
+    #[test]
+    fn test_remove_dir_counting_counts_files_and_keeps_symlink_targets() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("node_modules");
+        std::fs::create_dir_all(target.join("a/b")).unwrap();
+        for f in ["x", "a/y", "a/b/z"] {
+            std::fs::write(target.join(f), "1").unwrap();
+        }
+        // A symlink is removed, never followed: its target must survive
+        let outside = dir.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("keep"), "1").unwrap();
+        std::os::unix::fs::symlink(&outside, target.join("a/link")).unwrap();
+
+        let done = AtomicU64::new(0);
+        remove_dir_counting(&target, &done).unwrap();
+
+        assert!(!target.exists());
+        assert!(outside.join("keep").exists());
+        // Files only, like the scan's file count: no dirs, no symlinks
+        assert_eq!(done.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn test_delete_files_progress_is_bounded() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicU64;
+        let mut app = make_test_app(vec![]);
+        let progress = |total, done| FileProgress {
+            total,
+            done: Arc::new(AtomicU64::new(done)),
+        };
+        // More files than the scan saw (it may be stale): capped at 100%
+        app.prune.delete_files.insert(0, progress(10, 25));
+        app.prune.delete_files.insert(1, progress(200, 50));
+        // An empty dir has nothing to count
+        app.prune.delete_files.insert(2, progress(0, 0));
+
+        assert_eq!(app.prune.delete_files_progress(), (60, 210));
+        assert_eq!(app.prune.item_delete_pct(0), 100);
+        assert_eq!(app.prune.item_delete_pct(1), 25);
+        assert_eq!(app.prune.item_delete_pct(2), 0);
+    }
+
+    #[test]
+    fn test_delete_tracks_files_until_done() {
+        let dir = tempfile::tempdir().unwrap();
+        let nm = dir.path().join("web/node_modules");
+        std::fs::create_dir_all(&nm).unwrap();
+        for f in ["a", "b", "c"] {
+            std::fs::write(nm.join(f), "1").unwrap();
+        }
+        let mut item = make_result("node_modules", nm.to_str().unwrap(), 1);
+        item.file_count = 3;
+        let mut app = make_test_app(vec![item]);
+        app.prune.selected[0] = true;
+
+        app.start_deleting();
+        assert_eq!(app.prune.delete_files_progress().1, 3);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.mode == AppMode::Processing && std::time::Instant::now() < deadline {
+            app.poll_delete_results();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        assert!(!nm.exists());
+        assert_eq!(app.prune.delete_files_progress(), (3, 3));
     }
 
     #[test]

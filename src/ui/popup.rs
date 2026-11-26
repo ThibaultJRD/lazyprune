@@ -94,47 +94,93 @@ pub fn render_confirm(frame: &mut Frame, app: &App) {
     frame.render_widget(paragraph, area);
 }
 
-pub fn render_processing(frame: &mut Frame, app: &App) {
-    let progress = app.prune.delete_progress;
-    let total = app.prune.delete_total;
-    let pct = if total > 0 {
-        (progress as f64 / total as f64 * 100.0) as u16
-    } else {
-        0
-    };
+/// 1245120 -> "1 245 120"
+fn group_thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    out
+}
 
-    let width: u16 = 50;
-    let height: u16 = 7;
-    let area = popup_area(frame.area(), width, height);
+pub fn render_processing(frame: &mut Frame, app: &App) {
+    let prune = &app.prune;
+    // Progress counts files, not items: a few big items running in parallel
+    // would otherwise stay at 0% until the very end
+    let (files_done, files_total) = prune.delete_files_progress();
+    let pct = files_done * 100 / files_total.max(1);
+    let title = format!(
+        " Deleting {}/{} · {} / {} files ({pct}%) ",
+        prune.delete_progress,
+        prune.delete_total,
+        group_thousands(files_done),
+        group_thousands(files_total),
+    );
+
+    // One line per deletion still running, oldest first
+    let running: Vec<(String, u64)> = prune
+        .delete_in_progress
+        .iter()
+        .map(|(idx, path)| {
+            let short = super::tilde_path(std::path::Path::new(path));
+            (short, prune.item_delete_pct(*idx))
+        })
+        .collect();
+
+    // Width: the longest path + its percentage (+ indent and borders), within the terminal
+    let screen = frame.area();
+    let longest = running
+        .iter()
+        .map(|(p, _)| p.chars().count() + 10)
+        .max()
+        .unwrap_or(0) as u16;
+    let width = longest
+        .max(title.chars().count() as u16 + 2)
+        .max(50)
+        // Not clamp(): it panics when the terminal is narrower than the minimum
+        .min(screen.width.saturating_sub(10));
+
+    // Height: one line per running item, or as many as fit followed by "+N more"
+    let fixed_rows: u16 = 5; // borders, blank, bar, blank
+    let max_rows = screen.height.saturating_sub(fixed_rows + 4) as usize;
+    let (shown, hidden) = if running.len() > max_rows {
+        let shown = max_rows.saturating_sub(1);
+        (shown, running.len() - shown)
+    } else {
+        (running.len(), 0)
+    };
+    let height = fixed_rows + shown as u16 + u16::from(hidden > 0);
+    let area = popup_area(screen, width, height);
     frame.render_widget(Clear, area);
 
-    let title = format!(" Deleting... {}/{} ({pct}%) ", progress, total);
+    let bar_width = (width as usize).saturating_sub(6); // borders and padding
+    let filled = (bar_width as u64 * files_done / files_total.max(1)) as usize;
+    let bar = format!("  {}{}", "█".repeat(filled), "░".repeat(bar_width - filled));
 
-    // Progress bar
-    let bar_width = (width - 6) as usize; // minus borders and padding
-    let filled = (bar_width as f64 * progress as f64 / total.max(1) as f64) as usize;
-    let empty = bar_width - filled;
-    let bar = format!("  {}{}", "█".repeat(filled), "░".repeat(empty));
-
-    // Oldest deletion still running, plus how many others run alongside it
-    let in_progress = &app.prune.delete_in_progress;
-    let current = match in_progress.first() {
-        None => String::new(),
-        Some((_, path)) => {
-            let short = super::tilde_path(std::path::Path::new(path));
-            match in_progress.len() - 1 {
-                0 => format!("  {short}"),
-                others => format!("  {short} (+{others})"),
-            }
-        }
-    };
-
-    let lines = vec![
+    let mut lines = vec![
         Line::from(""),
         Line::styled(bar, Style::default().fg(Color::Red)),
         Line::from(""),
-        Line::styled(current, Style::default().fg(Color::DarkGray)),
     ];
+    // The path gets cut (from the start), never the percentage
+    let path_room = (width as usize).saturating_sub(10);
+    for (path, pct) in running.iter().take(shown) {
+        let path = truncate_left(path, path_room);
+        lines.push(Line::styled(
+            format!("  {path:<path_room$}{:>5} ", format!("{pct}%")),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    if hidden > 0 {
+        lines.push(Line::styled(
+            format!("  … +{hidden} more"),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
 
     let block = Block::default()
         .title(title)
@@ -584,22 +630,49 @@ mod tests {
         assert!(screen.contains("Permission denied (os error 13)"));
     }
 
-    #[test]
-    fn test_processing_popup_shows_oldest_running_and_count() {
+    fn deleting_app(running: &[(usize, &str, u64, u64)]) -> App {
         let mut app = test_app();
+        for &(idx, path, total, done) in running {
+            app.prune.delete_in_progress.push((idx, path.into()));
+            let done = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(done));
+            let progress = crate::app::FileProgress { total, done };
+            app.prune.delete_files.insert(idx, progress);
+        }
+        app.mode = AppMode::Processing;
+        app
+    }
+
+    #[test]
+    fn test_processing_popup_lists_running_items_with_percent() {
+        let mut app = deleting_app(&[
+            (3, "/p/a/node_modules", 1_000_000, 250_000),
+            (5, "/p/b/node_modules", 500_000, 500_000),
+        ]);
         app.prune.delete_total = 10;
         app.prune.delete_progress = 6;
-        app.prune.delete_in_progress = vec![
-            (3, "/p/a/node_modules".into()),
-            (5, "/p/b/node_modules".into()),
-            (7, "/p/c/node_modules".into()),
-        ];
-        app.mode = AppMode::Processing;
 
         let screen = render_screen(&mut app, 100, 30);
-        assert!(screen.contains("6/10 (60%)"));
-        assert!(screen.contains("/p/a/node_modules (+2)"));
-        assert!(!screen.contains("/p/b/node_modules"));
+        assert!(screen.contains("Deleting 6/10"));
+        assert!(screen.contains("750 000 / 1 500 000 files (50%)"));
+        assert!(screen.contains("/p/a/node_modules"));
+        assert!(screen.contains("25%"));
+        assert!(screen.contains("/p/b/node_modules"));
+        assert!(screen.contains("100%"));
+    }
+
+    #[test]
+    fn test_processing_popup_keeps_percent_of_long_paths() {
+        // The path gets cut, never the percentage
+        let long = format!(
+            "/{}my-project/node_modules",
+            "very-long-dir-name/".repeat(6)
+        );
+        let mut app = deleting_app(&[(0, &long, 100, 42)]);
+        app.prune.delete_total = 1;
+
+        let screen = render_screen(&mut app, 70, 20);
+        assert!(screen.contains("my-project/node_modules"));
+        assert!(screen.contains("42%"));
     }
 
     #[test]
